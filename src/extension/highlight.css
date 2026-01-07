@@ -1,0 +1,8 @@
+/* Highlight styles for search results */
+.rag-highlight {
+  background-color: #ffff00 !important;
+  transition: background-color 0.3s ease !important;
+  border: 2px solid #ffd700 !important;
+  box-shadow: 0 0 10px rgba(255, 215, 0, 0.5) !important;
+}
+

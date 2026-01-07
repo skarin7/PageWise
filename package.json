@@ -1,0 +1,36 @@
+{
+  "name": "comet-like-rag",
+  "version": "1.0.0",
+  "description": "Client-side RAG system for browser extension - Chat with any page",
+  "main": "dist/index.js",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "test": "echo \"Open test/local-test.html in browser\" && exit 0",
+    "test:server": "npx http-server . -p 8080 -o test/local-test.html"
+  },
+  "keywords": [
+    "rag",
+    "browser-extension",
+    "semantic-search",
+    "vector-search"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@orama/orama": "^1.0.0",
+    "@xenova/transformers": "^2.17.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/chrome": "^0.0.254",
+    "@types/node": "^20.10.0",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "ts-loader": "^9.5.1",
+    "copy-webpack-plugin": "^11.0.0"
+  }
+}
+

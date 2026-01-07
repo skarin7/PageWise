@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PageRAG Console Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .rag-highlight {
+            background-color: yellow !important;
+            transition: background-color 0.3s;
+        }
+        #console-output {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        input {
+            padding: 10px;
+            width: 300px;
+            margin: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>PageRAG Console Test Page</h1>
+    
+    <div class="test-section">
+        <h2>Quick Test</h2>
+        <p>Load the bundle and test PageRAG:</p>
+        <input type="text" id="query-input" placeholder="Enter your query..." />
+        <button onclick="testSearch()">Search</button>
+        <button onclick="testInit()">Initialize</button>
+        <button onclick="showChunks()">Show Chunks</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Console Output</h2>
+        <div id="console-output"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Content</h2>
+        <main>
+            <h1>Main Title</h1>
+            <p>This is the main content area. It contains important information about the page.</p>
+            
+            <h2>Section One</h2>
+            <p>This is section one with some content. It has multiple paragraphs.</p>
+            <p>Here's another paragraph in section one.</p>
+            
+            <h3>Subsection 1.1</h3>
+            <p>This is a subsection with more detailed information.</p>
+            
+            <h2>Section Two</h2>
+            <p>This is section two with different content.</p>
+            <ul>
+                <li>Item one</li>
+                <li>Item two</li>
+                <li>Item three</li>
+            </ul>
+            
+            <h2>Benefits</h2>
+            <p>We offer comprehensive benefits including health insurance, 401k plans, and flexible work arrangements.</p>
+        </main>
+    </div>
+
+    <!-- Load the test bundle -->
+    <!-- For local testing, use the built bundle -->
+    <script src="../dist/test-bundle.js"></script>
+    
+    <!-- Alternative: Load from a local server -->
+    <!-- <script src="http://localhost:8080/dist/test-bundle.js"></script> -->
+    
+    <script>
+        let rag = null;
+
+        function log(message) {
+            const output = document.getElementById('console-output');
+            output.innerHTML += '<div>' + message + '</div>';
+            output.scrollTop = output.scrollHeight;
+            console.log(message);
+        }
+
+        async function testInit() {
+            try {
+                log('Initializing PageRAG...');
+                rag = new PageRAG();
+                await rag.init();
+                log('✓ PageRAG initialized successfully!');
+            } catch (error) {
+                log('✗ Error: ' + error.message);
+                console.error(error);
+            }
+        }
+
+        async function testSearch() {
+            if (!rag) {
+                log('Please initialize PageRAG first');
+                return;
+            }
+
+            const query = document.getElementById('query-input').value || 'benefits';
+            try {
+                log('Searching for: ' + query);
+                const results = await rag.search(query, { limit: 5 });
+                log(`Found ${results.length} results:`);
+                results.forEach((result, i) => {
+                    log(`${i + 1}. Score: ${result.score.toFixed(3)} - ${result.chunk.metadata.raw_text.substring(0, 100)}...`);
+                    if (result.highlightElement) {
+                        rag.highlightResult(result);
+                    }
+                });
+            } catch (error) {
+                log('✗ Search error: ' + error.message);
+                console.error(error);
+            }
+        }
+
+        function showChunks() {
+            if (!rag) {
+                log('Please initialize PageRAG first');
+                return;
+            }
+            const chunks = rag.getChunks();
+            log(`Total chunks: ${chunks.length}`);
+            chunks.forEach((chunk, i) => {
+                log(`${i + 1}. ${chunk.id}: ${chunk.metadata.headingPath.join(' > ') || 'No heading'}`);
+            });
+        }
+
+        // Auto-initialize on load
+        window.addEventListener('load', () => {
+            log('Page loaded. PageRAG available in console.');
+            log('Try: const rag = new PageRAG(); await rag.init();');
+        });
+    </script>
+</body>
+</html>
+
