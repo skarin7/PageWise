@@ -9,6 +9,7 @@ import { findMainContentByLLM, getLLMConfig, type LLMConfig } from '../utils/llm
 import { buildHeadingHierarchy, findNextHeading, getHeadingPath } from '../utils/headingHierarchy';
 import { htmlToMarkdown } from '../utils/markdownConverter';
 import { filterChunksByRelevance, removeBoilerplate } from '../utils/contentFilter';
+import { logger } from '../utils/logger';
 
 export class DomChunker {
   private url: string;
@@ -37,22 +38,28 @@ export class DomChunker {
     if (!mainContent || mainContent === root) {
       // If mainContent is body or null, it's still valid - just log it
       if (mainContent === root) {
-        console.log('[DomChunker] Using body as main content (this is normal for some pages)');
+        logger.log('[DomChunker] Using body as main content (this is normal for some pages)');
       } else {
-        console.warn('[DomChunker] No main content found, using body as fallback');
+        logger.warn('[DomChunker] No main content found, using body as fallback');
       }
       
       // Use body directly - this is fine, many pages don't have semantic main tags
+      // Exclude iframes and their content
       const bodyHeadings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6')) as HTMLElement[];
-      const visibleBodyHeadings = bodyHeadings.filter(h => isVisible(h));
+      const visibleBodyHeadings = bodyHeadings.filter(h => {
+        if (!isVisible(h)) return false;
+        // Exclude headings inside iframes
+        if (h.closest('iframe')) return false;
+        return true;
+      });
       
       if (visibleBodyHeadings.length > 0) {
-        console.log(`[DomChunker] Found ${visibleBodyHeadings.length} headings in body, chunking by headings`);
+        logger.log(`[DomChunker] Found ${visibleBodyHeadings.length} headings in body, chunking by headings`);
         const headingTree = buildHeadingHierarchy(visibleBodyHeadings);
         chunks.push(...this.createChunksFromHeadingTree(headingTree, root));
       } else {
         // Last resort: chunk entire body by sections
-        console.log('[DomChunker] No headings found, chunking body by semantic sections');
+        logger.log('[DomChunker] No headings found, chunking body by semantic sections');
         chunks.push(...this.createChunksFromSemanticTags(root));
       }
       
@@ -64,37 +71,42 @@ export class DomChunker {
         minBM25Score: 0,
         removeDuplicates: true
       });
-      console.log(`[DomChunker] Final chunks: ${processed.length}`);
+      logger.log(`[DomChunker] Final chunks: ${processed.length}`);
       return processed;
     }
 
-    console.log(`[DomChunker] Main content found: ${mainContent.tagName}${mainContent.id ? '#' + mainContent.id : ''}${mainContent.className ? '.' + mainContent.className.split(' ')[0] : ''}`);
+    logger.log(`[DomChunker] Main content found: ${mainContent.tagName}${mainContent.id ? '#' + mainContent.id : ''}${mainContent.className ? '.' + mainContent.className.split(' ')[0] : ''}`);
 
-    // Step 2: Build heading hierarchy
+    // Step 2: Build heading hierarchy (exclude iframes)
     const headings = Array.from(mainContent.querySelectorAll('h1, h2, h3, h4, h5, h6')) as HTMLElement[];
-    const visibleHeadings = headings.filter(h => isVisible(h));
+    const visibleHeadings = headings.filter(h => {
+      if (!isVisible(h)) return false;
+      // Exclude headings inside iframes
+      if (h.closest('iframe')) return false;
+      return true;
+    });
     
-    console.log(`[DomChunker] Found ${headings.length} total headings, ${visibleHeadings.length} visible`);
+    logger.log(`[DomChunker] Found ${headings.length} total headings, ${visibleHeadings.length} visible`);
 
     if (visibleHeadings.length > 0) {
       // PRIMARY: Heading-based chunking
       const headingTree = buildHeadingHierarchy(visibleHeadings);
       chunks.push(...this.createChunksFromHeadingTree(headingTree, mainContent));
-      console.log(`[DomChunker] Created ${chunks.length} chunks from heading tree`);
+      logger.log(`[DomChunker] Created ${chunks.length} chunks from heading tree`);
     } else {
       // FALLBACK: Use semantic tags
-      console.log('[DomChunker] No visible headings, using semantic tags fallback');
+      logger.log('[DomChunker] No visible headings, using semantic tags fallback');
       chunks.push(...this.createChunksFromSemanticTags(mainContent));
-      console.log(`[DomChunker] Created ${chunks.length} chunks from semantic tags`);
+      logger.log(`[DomChunker] Created ${chunks.length} chunks from semantic tags`);
     }
 
     // Step 1: Deduplicate
     let processed = this.deduplicateChunks(chunks);
-    console.log(`[DomChunker] After deduplication: ${processed.length} chunks`);
+    logger.log(`[DomChunker] After deduplication: ${processed.length} chunks`);
     
     // Step 2: Remove boilerplate
     processed = removeBoilerplate(processed);
-    console.log(`[DomChunker] After boilerplate removal: ${processed.length} chunks`);
+    logger.log(`[DomChunker] After boilerplate removal: ${processed.length} chunks`);
     
     // Step 3: Filter by relevance (BM25 + quality scoring)
     processed = filterChunksByRelevance(processed, {
@@ -102,9 +114,9 @@ export class DomChunker {
       minBM25Score: 0,
       removeDuplicates: true
     });
-    console.log(`[DomChunker] After relevance filtering: ${processed.length} chunks`);
+    logger.log(`[DomChunker] After relevance filtering: ${processed.length} chunks`);
     
-    console.log(`[DomChunker] Final chunks: ${processed.length}`);
+    logger.log(`[DomChunker] Final chunks: ${processed.length}`);
     return processed;
   }
 
@@ -115,7 +127,7 @@ export class DomChunker {
     // Try semantic HTML first
     const main = root.querySelector('main') || root.querySelector('[role="main"]');
     if (main && isVisible(main as HTMLElement)) {
-      console.log('[DomChunker] Found main content via semantic HTML:', main.tagName);
+      logger.log('[DomChunker] Found main content via semantic HTML:', main.tagName);
       return main as HTMLElement;
     }
 
@@ -134,7 +146,7 @@ export class DomChunker {
       if (element && isVisible(element as HTMLElement)) {
         const textLength = (element.textContent || '').length;
         if (textLength > 100) {
-          console.log(`[DomChunker] Found main content via selector "${selector}":`, element.tagName);
+          logger.log(`[DomChunker] Found main content via selector "${selector}":`, element.tagName);
           return element as HTMLElement;
         }
       }
@@ -146,20 +158,20 @@ export class DomChunker {
       try {
         const llmResult = await findMainContentByLLM(root.ownerDocument || document, config);
         if (llmResult) {
-          console.log('[DomChunker] ✅ Found main content via LLM:', llmResult.tagName);
+          logger.log('[DomChunker] ✅ Found main content via LLM:', llmResult.tagName);
           return llmResult;
         }
       } catch (error) {
-        console.warn('[DomChunker] LLM extraction failed, falling back to heuristics:', error);
+        logger.warn('[DomChunker] LLM extraction failed, falling back to heuristics:', error);
       }
     }
 
     // Fallback: Use heuristics
     const heuristicResult = findMainContentByHeuristics(root.ownerDocument || document);
     if (heuristicResult) {
-      console.log('[DomChunker] Found main content via heuristics:', heuristicResult.tagName);
+      logger.log('[DomChunker] Found main content via heuristics:', heuristicResult.tagName);
     } else {
-      console.warn('[DomChunker] Heuristics failed to find main content');
+      logger.warn('[DomChunker] Heuristics failed to find main content');
     }
     return heuristicResult;
   }
@@ -234,6 +246,17 @@ export class DomChunker {
         break;
       }
 
+      // Skip iframes and their content
+      if (current.tagName === 'IFRAME') {
+        current = current.nextElementSibling;
+        continue;
+      }
+      // Skip elements inside iframes
+      if ((current as HTMLElement).closest && (current as HTMLElement).closest('iframe')) {
+        current = current.nextElementSibling;
+        continue;
+      }
+
       if (current.tagName === 'P') {
         const text = extractTextContent(current as HTMLElement);
         if (text) content.push(text);
@@ -271,6 +294,16 @@ export class DomChunker {
     while (current && current !== nextHeading) {
       if (current.tagName.match(/^H[1-6]$/)) {
         break;
+      }
+      // Skip iframes and their content
+      if (current.tagName === 'IFRAME') {
+        current = current.nextElementSibling;
+        continue;
+      }
+      // Skip elements inside iframes
+      if ((current as HTMLElement).closest && (current as HTMLElement).closest('iframe')) {
+        current = current.nextElementSibling;
+        continue;
       }
       // Clone element to container
       container.appendChild(current.cloneNode(true));
@@ -315,7 +348,12 @@ export class DomChunker {
    */
   private createChunksFromSemanticTags(mainContent: HTMLElement): Chunk[] {
     const chunks: Chunk[] = [];
-    const sections = mainContent.querySelectorAll('section, article, [role="region"]');
+    // Exclude iframes and their content
+    const allSections = mainContent.querySelectorAll('section, article, [role="region"]');
+    const sections = Array.from(allSections).filter(section => {
+      // Exclude sections inside iframes
+      return !(section as HTMLElement).closest('iframe');
+    }) as HTMLElement[];
 
     sections.forEach((section, index) => {
       if (!isVisible(section as HTMLElement)) return;

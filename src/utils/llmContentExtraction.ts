@@ -33,6 +33,14 @@ function extractHTMLStructure(document: Document): string {
   function traverse(element: HTMLElement, depth: number = 0, path: string = ''): void {
     if (depth > maxDepth) return;
     
+    // Skip iframes and their content
+    if (element.tagName.toLowerCase() === 'iframe') {
+      return;
+    }
+    if (element.closest('iframe')) {
+      return;
+    }
+    
     const tag = element.tagName.toLowerCase();
     const id = element.id ? `#${element.id}` : '';
     const classes = element.className ? `.${element.className.split(' ').slice(0, 2).join('.')}` : '';
@@ -44,17 +52,30 @@ function extractHTMLStructure(document: Document): string {
     
     structure.push(`${'  '.repeat(depth)}${selector} (${childCount} children, ~${textPreview.length} chars)`);
     
-    // Only traverse direct children to keep structure manageable
+    // Only traverse direct children to keep structure manageable (exclude iframes)
     if (depth < maxDepth) {
-      Array.from(element.children).slice(0, 10).forEach(child => {
-        traverse(child as HTMLElement, depth + 1);
-      });
+      Array.from(element.children)
+        .filter(child => {
+          const childEl = child as HTMLElement;
+          return childEl.tagName.toLowerCase() !== 'iframe' && !childEl.closest('iframe');
+        })
+        .slice(0, 10)
+        .forEach(child => {
+          traverse(child as HTMLElement, depth + 1);
+        });
     }
   }
   
-  Array.from(body.children).slice(0, 20).forEach(child => {
-    traverse(child as HTMLElement, 0);
-  });
+  // Filter out iframes from body children
+  Array.from(body.children)
+    .filter(child => {
+      const childEl = child as HTMLElement;
+      return childEl.tagName.toLowerCase() !== 'iframe';
+    })
+    .slice(0, 20)
+    .forEach(child => {
+      traverse(child as HTMLElement, 0);
+    });
   
   return structure.join('\n');
 }
@@ -79,6 +100,8 @@ Instructions:
 6. If no clear main content, return the selector for the element with the most substantial text content
 
 Return format: Just the CSS selector, nothing else. Example: "main" or "#content" or ".article-content" or "body > div:nth-child(2)"
+
+IMPORTANT: Do NOT select iframes or elements inside iframes. Ignore chatbot widgets, ads, and third-party embeds.
 
 CSS Selector:`;
 }

@@ -3,6 +3,8 @@
  * Inspired by Mozilla Readability and Crawl4AI's content extraction
  */
 
+import { logger } from './logger';
+
 /**
  * Check if element should be removed (negative indicators)
  */
@@ -23,8 +25,8 @@ function isUnlikelyContent(element: HTMLElement): boolean {
   const id = element.id || '';
   const className = element.className || '';
   
-  // Check tag name
-  if (['nav', 'footer', 'header', 'aside', 'script', 'style', 'noscript'].includes(tagName)) {
+  // Check tag name - exclude iframes (chatbots, ads, third-party widgets)
+  if (['nav', 'footer', 'header', 'aside', 'script', 'style', 'noscript', 'iframe'].includes(tagName)) {
     return true;
   }
   
@@ -160,10 +162,12 @@ export function findMainContentByHeuristics(document: Document): HTMLElement | n
   // First, try direct children of body
   let candidates: HTMLElement[] = Array.from(body.children) as HTMLElement[];
   
-  // Filter out unlikely candidates
+  // Filter out unlikely candidates (including iframes)
   candidates = candidates.filter(candidate => {
     if (!isVisible(candidate)) return false;
     if (isUnlikelyContent(candidate)) return false;
+    // Explicitly exclude iframes
+    if (candidate.tagName.toLowerCase() === 'iframe') return false;
     return true;
   });
   
@@ -189,7 +193,7 @@ export function findMainContentByHeuristics(document: Document): HTMLElement | n
     // If best score is positive and much better than second, use it
     if (best.score > 0 && 
         (scoredCandidates.length === 1 || best.score > scoredCandidates[1].score * 1.5)) {
-      console.log(`[ContentExtraction] Found main content with score ${best.score.toFixed(2)}:`, best.element.tagName);
+      logger.log(`[ContentExtraction] Found main content with score ${best.score.toFixed(2)}:`, best.element.tagName);
       return best.element;
     }
     
@@ -214,16 +218,20 @@ export function findMainContentByHeuristics(document: Document): HTMLElement | n
   // Last resort: Check if body itself has substantial content
   const bodyScore = calculateContentScore(body);
   if (bodyScore > 0 || (body.textContent || '').trim().length > 500) {
-    console.log(`[ContentExtraction] Using body as main content (score: ${bodyScore.toFixed(2)})`);
+    logger.log(`[ContentExtraction] Using body as main content (score: ${bodyScore.toFixed(2)})`);
     return body;
   }
   
   // If body doesn't have content, try to find the largest content container
+  // Exclude iframes and their descendants
   const allElements = Array.from(body.querySelectorAll('*')) as HTMLElement[];
   const scoredElements = allElements
     .filter(el => {
       if (!isVisible(el)) return false;
       if (isUnlikelyContent(el)) return false;
+      // Exclude iframes and any element inside an iframe
+      if (el.tagName.toLowerCase() === 'iframe') return false;
+      if (el.closest('iframe')) return false; // Exclude descendants of iframes
       const text = (el.textContent || '').trim();
       return text.length > 200; // Must have substantial text
     })
@@ -234,12 +242,12 @@ export function findMainContentByHeuristics(document: Document): HTMLElement | n
     .sort((a, b) => b.score - a.score);
   
   if (scoredElements.length > 0 && scoredElements[0].score > 0) {
-    console.log(`[ContentExtraction] Found main content via deep search (score: ${scoredElements[0].score.toFixed(2)})`);
+    logger.log(`[ContentExtraction] Found main content via deep search (score: ${scoredElements[0].score.toFixed(2)})`);
     return scoredElements[0].element;
   }
   
   // Final fallback: return body
-  console.log('[ContentExtraction] Using body as final fallback');
+  logger.log('[ContentExtraction] Using body as final fallback');
   return body;
 }
 
@@ -259,11 +267,13 @@ function findMainContentRecursive(element: HTMLElement, depth: number = 0): HTML
     return element;
   }
   
-  // Search children
+  // Search children (exclude iframes)
   const children = Array.from(element.children) as HTMLElement[];
   const validChildren = children.filter(child => {
     if (!isVisible(child)) return false;
     if (isUnlikelyContent(child)) return false;
+    // Explicitly exclude iframes
+    if (child.tagName.toLowerCase() === 'iframe') return false;
     return true;
   });
   

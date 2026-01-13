@@ -61,14 +61,63 @@ export class PageRAG {
         return;
       }
 
-      // Step 5: Generate embeddings
-      console.log('Step 4/4: Generating embeddings...');
-      const texts = this.chunks.map(chunk => chunk.text);
-      const embeddings = await this.embedder.embedBatch(texts);
+      // Step 5: Generate embeddings (with content change detection)
+      let embeddings: number[][] | undefined;
+      
+      // Check if embeddings are already loaded from IndexedDB
+      const vectorStore = this.vectorStore as any;
+      const hasCachedEmbeddings = vectorStore.embeddings && 
+                                  vectorStore.embeddings.size > 0 &&
+                                  this.chunks.every(chunk => vectorStore.embeddings.has(chunk.id));
+      
+      if (hasCachedEmbeddings) {
+        // Embeddings are loaded, but validation happens in insertChunks()
+        // Extract them for now - if content changed, insertChunks will throw and we'll regenerate
+        console.log(`Step 4/4: Found ${vectorStore.embeddings.size} cached embeddings (will validate content hash)`);
+        embeddings = this.chunks.map(chunk => vectorStore.embeddings.get(chunk.id)).filter(Boolean) as number[][];
+        
+        // If some embeddings are missing, we'll generate them
+        if (embeddings.length < this.chunks.length) {
+          console.log(`Step 4/4: Generating embeddings for ${this.chunks.length - embeddings.length} missing chunks...`);
+          const missingIndices: number[] = [];
+          const textsToEmbed: string[] = [];
+          
+          for (let i = 0; i < this.chunks.length; i++) {
+            if (!vectorStore.embeddings.has(this.chunks[i].id)) {
+              missingIndices.push(i);
+              textsToEmbed.push(this.chunks[i].text);
+            }
+          }
+          
+          const newEmbeddings = await this.embedder.embedBatch(textsToEmbed);
+          
+          // Insert new embeddings at correct positions
+          for (let i = 0; i < missingIndices.length; i++) {
+            embeddings[missingIndices[i]] = newEmbeddings[i];
+          }
+        }
+      } else {
+        console.log('Step 4/4: Generating embeddings (no cache or cache invalid)...');
+        const texts = this.chunks.map(chunk => chunk.text);
+        embeddings = await this.embedder.embedBatch(texts);
+      }
 
       // Step 6: Insert chunks with embeddings into vector store
-      // Note: Orama handles embeddings internally, we just need to insert chunks
-      await this.vectorStore.insertChunks(this.chunks);
+      // This will validate content hash and throw if content changed
+      try {
+        await this.vectorStore.insertChunks(this.chunks, embeddings);
+      } catch (error) {
+        // Content changed - regenerate embeddings
+        if (error instanceof Error && error.message.includes('Content changed')) {
+          console.log('Step 4/4: Content changed, regenerating embeddings...');
+          const texts = this.chunks.map(chunk => chunk.text);
+          embeddings = await this.embedder.embedBatch(texts);
+          // Retry insertion with new embeddings
+          await this.vectorStore.insertChunks(this.chunks, embeddings);
+        } else {
+          throw error;
+        }
+      }
 
       this.initialized = true;
       console.log('PageRAG initialized successfully');

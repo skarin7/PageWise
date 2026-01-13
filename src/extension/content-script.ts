@@ -3,184 +3,7 @@
  */
 
 import { PageRAG } from '../core/PageRAG';
-
-// Export LLM config helpers to the PAGE's window object using window.postMessage
-// This approach is CSP-safe and works across isolated worlds
-function injectLLMHelpersToPage() {
-  // Use a script tag with src pointing to a blob URL (CSP-safe)
-  // Or better: inject via a script that uses window.postMessage
-  const script = document.createElement('script');
-  
-  // Create a blob URL with the script content (CSP-safe)
-  const scriptContent = `
-    (function() {
-      const RAG_MESSAGE_PREFIX = '__RAG_EXTENSION__';
-      let messageId = 0;
-      const pendingMessages = new Map();
-      
-      // Listen for responses from content script
-      window.addEventListener('message', function(event) {
-        // Only accept messages from our extension
-        if (event.data && event.data.type && event.data.type.startsWith(RAG_MESSAGE_PREFIX)) {
-          const { id, result, error } = event.data;
-          const resolver = pendingMessages.get(id);
-          if (resolver) {
-            pendingMessages.delete(id);
-            if (error) {
-              resolver.reject(new Error(error));
-            } else {
-              resolver.resolve(result);
-            }
-          }
-        }
-      });
-      
-      // Function to send message to content script
-      function sendMessage(type, data) {
-        return new Promise(function(resolve, reject) {
-          const id = ++messageId;
-          pendingMessages.set(id, { resolve, reject });
-          
-          // Send message to content script via window.postMessage
-          window.postMessage({
-            type: RAG_MESSAGE_PREFIX + type,
-            id: id,
-            data: data
-          }, '*');
-          
-          // Timeout after 5 seconds
-          setTimeout(function() {
-            if (pendingMessages.has(id)) {
-              pendingMessages.delete(id);
-              reject(new Error('Timeout waiting for response'));
-            }
-          }, 5000);
-        });
-      }
-      
-      // Expose functions on window
-      window.configureLLMExtraction = async function(config) {
-        return sendMessage('configureLLM', { config: config });
-      };
-      
-      window.getLLMConfig = async function() {
-        return sendMessage('getLLMConfig', {});
-      };
-      
-      console.log('%c💡 LLM Config Helpers Available (Page Console)', 'color: #667eea; font-weight: bold; font-size: 14px;');
-      console.log('  - await configureLLMExtraction(config)');
-      console.log('  - await getLLMConfig()');
-      
-      // Verify functions are attached
-      if (typeof window.configureLLMExtraction === 'function' && typeof window.getLLMConfig === 'function') {
-        console.log('✅ Functions successfully attached to window object');
-      } else {
-        console.error('❌ Functions NOT attached to window object');
-      }
-    })();
-  `;
-  
-  // Create blob URL (CSP-safe)
-  const blob = new Blob([scriptContent], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  script.src = url;
-  
-  // Inject into the page's document
-  try {
-    if (document.head) {
-      document.head.appendChild(script);
-    } else if (document.documentElement) {
-      document.documentElement.appendChild(script);
-    } else if (document.body) {
-      document.body.appendChild(script);
-    }
-    
-    // Clean up blob URL after script loads
-    script.onload = function() {
-      URL.revokeObjectURL(url);
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-    };
-  } catch (error) {
-    console.error('[ContentScript] Error injecting script:', error);
-    URL.revokeObjectURL(url);
-  }
-}
-
-// Listen for messages from the page context via window.postMessage
-window.addEventListener('message', async (event: MessageEvent) => {
-  // Only accept messages from the same window (page context)
-  if (event.source !== window) return;
-  
-  const data = event.data;
-  if (!data || !data.type || !data.type.startsWith('__RAG_EXTENSION__')) return;
-  
-  const { type, id, data: messageData } = data;
-  
-  try {
-    if (type === '__RAG_EXTENSION__configureLLM') {
-      const config = messageData?.config;
-      if (config) {
-        const { saveLLMConfig } = await import('../utils/llmContentExtraction');
-        await saveLLMConfig(config);
-        // Send response back to page context
-        window.postMessage({
-          type: '__RAG_EXTENSION__response',
-          id: id,
-          result: config
-        }, '*');
-        console.log('✅ LLM config saved. Reload page to apply.');
-        console.log('Config:', config);
-      }
-    } else if (type === '__RAG_EXTENSION__getLLMConfig') {
-      const { getLLMConfig } = await import('../utils/llmContentExtraction');
-      const config = await getLLMConfig();
-      // Send response back to page context
-      window.postMessage({
-        type: '__RAG_EXTENSION__response',
-        id: id,
-        result: config
-      }, '*');
-    }
-  } catch (error) {
-    // Send error response
-    window.postMessage({
-      type: '__RAG_EXTENSION__response',
-      id: id,
-      error: String(error)
-    }, '*');
-    console.error('[ContentScript] Error handling message:', error);
-  }
-});
-
-// Inject helpers into page context
-// Try immediately, and also on DOM ready as fallback
-function tryInjectLLMHelpers() {
-  if (typeof window !== 'undefined' && document) {
-    try {
-      injectLLMHelpersToPage();
-      console.log('[ContentScript] LLM helpers injected into page context');
-    } catch (error) {
-      console.error('[ContentScript] Failed to inject LLM helpers:', error);
-    }
-  }
-}
-
-// Inject immediately if DOM is ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', tryInjectLLMHelpers);
-} else {
-  // DOM is already ready
-  tryInjectLLMHelpers();
-}
-
-// Also try after a short delay as a fallback (in case injection failed)
-setTimeout(tryInjectLLMHelpers, 1000);
-
-// Expose a manual injection function in content script context (for debugging)
-// Users can call this from content script console if needed
-(window as any).__ragInjectLLMHelpers = tryInjectLLMHelpers;
+import { logger } from '../utils/logger';
 
 // Inject highlight styles
 const style = document.createElement('style');
@@ -313,7 +136,7 @@ const SIDEBAR_STORAGE_KEY = 'rag_sidebar_open';
 
 // Message listener - set up once, outside init function
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Content script received message:', message.type);
+  logger.log('Content script received message:', message.type);
   
   // Handle ping for checking if content script is loaded
   if (message.type === 'PING') {
@@ -332,7 +155,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     rag.search(message.query, message.options)
       .then(results => {
-        console.log('Search results:', results.length);
+        logger.log('Search results:', results.length);
         sendResponse({ success: true, results });
       })
       .catch(error => {
@@ -393,7 +216,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Initialize on page load
 async function initRAG() {
   if (isInitializing) {
-    console.log('[PageRAG] Already initializing, skipping...');
+    logger.log('[PageRAG] Already initializing, skipping...');
     return;
   }
   
@@ -403,10 +226,10 @@ async function initRAG() {
     // Check if URL changed (SPA navigation)
     const ragUrl = (rag as any).url;
     if (ragUrl === currentUrl) {
-      console.log('[PageRAG] Already initialized for this URL, skipping...');
+      logger.log('[PageRAG] Already initialized for this URL, skipping...');
       return;
     } else {
-      console.log('[PageRAG] URL changed, re-initializing...');
+      logger.log('[PageRAG] URL changed, re-initializing...');
       rag = null;
     }
   }
@@ -414,11 +237,11 @@ async function initRAG() {
   isInitializing = true;
   
   try {
-    console.log('[PageRAG] Starting initialization...');
-    console.log('[PageRAG] URL:', currentUrl);
+    logger.log('[PageRAG] Starting initialization...');
+    logger.log('[PageRAG] URL:', currentUrl);
     rag = new PageRAG();
     await rag.init();
-    console.log('[PageRAG] ✅ Initialized successfully with', rag.getChunks().length, 'chunks');
+      logger.log('[PageRAG] ✅ Initialized successfully with', rag.getChunks().length, 'chunks');
   } catch (error) {
     console.error('[PageRAG] ❌ Failed to initialize:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -432,12 +255,12 @@ async function initRAG() {
 // Wait for DOM to be ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    console.log('[PageRAG] DOM loaded, initializing...');
+    logger.log('[PageRAG] DOM loaded, initializing...');
     initRAG();
     restoreSidebarState();
   });
 } else {
-  console.log('[PageRAG] DOM already ready, initializing...');
+  logger.log('[PageRAG] DOM already ready, initializing...');
   initRAG();
   restoreSidebarState();
 }
@@ -457,7 +280,7 @@ new MutationObserver(() => {
     }
     
     navigationTimeout = setTimeout(() => {
-      console.log('[PageRAG] URL changed, re-initializing...');
+      logger.log('[PageRAG] URL changed, re-initializing...');
       rag = null;
       initRAG();
     }, 500);
@@ -466,8 +289,21 @@ new MutationObserver(() => {
 
 // Sidebar management functions
 function createSidebar(): HTMLDivElement {
-  if (sidebarContainer) {
+  // Check if sidebar already exists in DOM (even if sidebarContainer is null)
+  const existingSidebar = document.getElementById('rag-sidebar-container');
+  if (existingSidebar) {
+    sidebarContainer = existingSidebar as HTMLDivElement;
     return sidebarContainer;
+  }
+  
+  // Also check if sidebarContainer is set and still in DOM
+  if (sidebarContainer && document.body.contains(sidebarContainer)) {
+    return sidebarContainer;
+  }
+  
+  // Reset sidebarContainer if it's not in DOM
+  if (sidebarContainer && !document.body.contains(sidebarContainer)) {
+    sidebarContainer = null;
   }
   
   const container = document.createElement('div');
@@ -613,6 +449,16 @@ function createSidebar(): HTMLDivElement {
 }
 
 async function showSidebar(): Promise<void> {
+  // First, check if there are any duplicate sidebars and remove them
+  const allSidebars = document.querySelectorAll('#rag-sidebar-container');
+  if (allSidebars.length > 1) {
+    logger.warn(`[ContentScript] Found ${allSidebars.length} sidebar instances, removing duplicates`);
+    // Keep the first one, remove the rest
+    for (let i = 1; i < allSidebars.length; i++) {
+      allSidebars[i].remove();
+    }
+  }
+  
   const container = createSidebar();
   container.classList.add('visible');
   // Save state to storage
@@ -650,7 +496,15 @@ async function restoreSidebarState(): Promise<void> {
     if (result[SIDEBAR_STORAGE_KEY] === true) {
       // Wait a bit for DOM to be ready
       setTimeout(() => {
-        showSidebar();
+        // Check if sidebar already exists before showing
+        const existingSidebar = document.getElementById('rag-sidebar-container');
+        if (!existingSidebar) {
+          showSidebar();
+        } else {
+          // Sidebar already exists, just make it visible
+          existingSidebar.classList.add('visible');
+          sidebarContainer = existingSidebar as HTMLDivElement;
+        }
       }, 500);
     }
   } catch (e) {
@@ -770,6 +624,6 @@ function scrollAndHighlight(element: HTMLElement): void {
     }
   }
   
-  console.log('[ContentScript] ✅ Navigated to chunk element:', element.tagName, element.id, element.className);
+  logger.log('[ContentScript] ✅ Navigated to chunk element:', element.tagName, element.id, element.className);
 }
 
