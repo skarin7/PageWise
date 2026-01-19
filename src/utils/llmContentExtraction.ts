@@ -261,9 +261,34 @@ function extractSelectorFromResponse(response: string): string | null {
   // Extract first line (selector should be on first line)
   selector = selector.split('\n')[0].trim();
   
+  // Check if it's a sentence/explanation rather than a selector
+  // If it contains common words that indicate it's not a selector, reject it
+  const invalidPatterns = [
+    /^(the|a|an|this|that|is|are|was|were|will|would|should|can|could|may|might)\s+/i,
+    /^(main|content|area|section|element|page|website|site)\s+/i,
+    /(is|are|was|were|will|would|should|can|could|may|might)\s+(the|a|an|this|that)/i,
+    /\s+(is|are|was|were|will|would|should|can|could|may|might)\s+/i
+  ];
+  
+  // If it matches invalid patterns (looks like a sentence), reject it
+  if (invalidPatterns.some(pattern => pattern.test(selector))) {
+    console.warn('[LLMContentExtraction] Response appears to be a sentence, not a selector:', selector);
+    return null;
+  }
+  
   // Validate it looks like a CSS selector
+  // Must start with #, ., [ or a letter (tag name)
+  // Must not contain spaces in the middle (unless it's a descendant selector with > or +)
   if (selector && /^[#.a-z0-9\[\]:\s>+~_-]+$/i.test(selector)) {
-    return selector;
+    // Additional check: must start with valid selector characters
+    if (/^[#.a-z\[\]_-]/i.test(selector)) {
+      // Check if it's too long (likely a sentence)
+      if (selector.length > 200) {
+        console.warn('[LLMContentExtraction] Selector too long, likely not a valid selector:', selector.substring(0, 50));
+        return null;
+      }
+      return selector;
+    }
   }
   
   return null;

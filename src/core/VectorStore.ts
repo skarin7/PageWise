@@ -127,7 +127,8 @@ export class VectorStore {
         request.onupgradeneeded = (event: any) => {
           const db = event.target.result;
           if (!db.objectStoreNames.contains('embeddings')) {
-            db.createObjectStore('embeddings');
+            // Create object store with 'id' as key path
+            db.createObjectStore('embeddings', { keyPath: 'id' });
           }
         };
       });
@@ -187,7 +188,8 @@ export class VectorStore {
         request.onupgradeneeded = (event: any) => {
           const db = event.target.result;
           if (!db.objectStoreNames.contains('embeddings')) {
-            db.createObjectStore('embeddings');
+            // Create object store with 'id' as key path
+            db.createObjectStore('embeddings', { keyPath: 'id' });
           }
         };
       });

@@ -165,17 +165,35 @@ if (typeof self !== 'undefined' && self !== window) {
   };
 };
 
+// Message interface
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  sources?: any[];
+  citations?: {
+    citations: Array<{
+      start: number;
+      end: number;
+      sourceIndices: number[];
+      confidence: number;
+    }>;
+  };
+}
+
 // Get elements
 const queryInput = document.getElementById('query-input') as HTMLInputElement;
 const searchButton = document.getElementById('search-button') as HTMLButtonElement;
-const resultsDiv = document.getElementById('results') as HTMLDivElement;
+const messagesContainer = document.getElementById('messages-container') as HTMLDivElement;
 const statusDiv = document.getElementById('status') as HTMLDivElement;
 const statusText = document.getElementById('status-text') as HTMLSpanElement;
 const statusSpinner = document.getElementById('status-spinner') as HTMLSpanElement;
 const closeBtn = document.getElementById('close-btn') as HTMLButtonElement;
+const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
 
 // State
 let currentTabId: number | null = null;
+let conversationHistory: Message[] = [];
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -197,18 +215,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Clear conversation button
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      clearConversation();
+    });
+  }
+
   // Search button
   searchButton.addEventListener('click', handleSearch);
 
-  // Enter key to search
+  // Enter key to send message
   queryInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       handleSearch();
     }
   });
 
   // Focus input on load
   queryInput.focus();
+  
+  // Initialize conversation display
+  renderConversation();
 });
 
 // Check if content script is available
@@ -295,150 +324,324 @@ async function handleSearch() {
   const query = queryInput.value.trim();
   if (!query || !currentTabId) return;
 
+  // Clear input
+  queryInput.value = '';
+
+  // Add user message to conversation
+  addMessage('user', query);
+  renderConversation();
+
   // Immediate visual feedback
   searchButton.disabled = true;
-  searchButton.textContent = 'Searching...';
+  searchButton.textContent = 'Sending...';
   searchButton.classList.add('searching');
 
-  // Fade out previous results if any
-  const existingResults = resultsDiv.querySelectorAll('.result-item');
-  if (existingResults.length > 0) {
-    existingResults.forEach(item => {
-      item.classList.add('fade-out');
-    });
-    // Wait for fade-out animation
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
+  // Show typing indicator
+  showTypingIndicator();
 
-  // Show loading state with smooth appearance
-  resultsDiv.innerHTML = `
-    <div class="empty-state loading-container">
-      <div class="loading-spinner" style="margin: 0 auto;"></div>
-      <p style="margin-top: 16px;">Searching...</p>
-    </div>
-  `;
+  // Auto-expand sidebar when conversation starts
+  if (window.parent) {
+    window.parent.postMessage({ type: '__RAG_SIDEBAR_EXPAND__' }, '*');
+  }
 
   // Ensure content script is loaded
   const isLoaded = await checkContentScript(currentTabId);
   if (!isLoaded) {
-    // Content script is auto-injected via manifest.json
-    // Just wait a bit and retry
     await ensureContentScript(currentTabId);
-    // Retry the search after waiting
     const retryLoaded = await checkContentScript(currentTabId);
     if (!retryLoaded) {
-      resultsDiv.innerHTML = '<div class="empty-state"><p style="color: #c62828;">Error: Content script not available. Make sure you\'re on a web page (not chrome:// pages) and reload the page.</p></div>';
+      hideTypingIndicator();
+      addMessage('assistant', 'Error: Content script not available. Make sure you\'re on a web page (not chrome:// pages) and reload the page.');
+      renderConversation();
       searchButton.disabled = false;
-      searchButton.textContent = 'Search';
+      searchButton.textContent = 'Send';
       searchButton.classList.remove('searching');
       return;
     }
   }
+  
+  // Prepare conversation history (last 10 messages for context)
+  const recentHistory = conversationHistory.slice(-10).map(msg => ({
+    role: msg.role,
+    content: msg.content
+  }));
   
   chrome.tabs.sendMessage(
     currentTabId,
     {
       type: 'SEARCH',
       query,
+      conversationHistory: recentHistory,
       options: { limit: 10 }
     },
     async (response) => {
+      // Hide typing indicator
+      hideTypingIndicator();
+
       // Re-enable search button
       searchButton.disabled = false;
-      searchButton.textContent = 'Search';
+      searchButton.textContent = 'Send';
       searchButton.classList.remove('searching');
 
       if (chrome.runtime.lastError) {
-        // Fade out loading, show error
-        const loadingContainer = resultsDiv.querySelector('.loading-container');
-        if (loadingContainer) {
-          loadingContainer.classList.add('fade-out');
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-        resultsDiv.innerHTML = `<div class="empty-state"><p style="color: #c62828;">Error: ${chrome.runtime.lastError.message}</p></div>`;
+        const errorMsg = chrome.runtime.lastError.message;
+        addMessage('assistant', `Error: ${errorMsg}`);
+        renderConversation();
         console.error('Sidebar error:', chrome.runtime.lastError);
         return;
       }
       
       if (response?.success) {
-        // Fade out loading state smoothly
-        const loadingContainer = resultsDiv.querySelector('.loading-container');
-        if (loadingContainer) {
-          loadingContainer.classList.add('fade-out');
-          await new Promise(resolve => setTimeout(resolve, 200));
+        // Add assistant message with answer and sources
+        const answer = response.answer || (response.results.length > 0 
+          ? 'I found some relevant information, but couldn\'t generate a summary. Please check the sources below.' 
+          : 'I couldn\'t find any relevant information on this page.');
+        
+        // Insert citations into answer if available
+        let answerWithCitations = answer;
+        if (response.citations && response.citations.citations.length > 0) {
+          answerWithCitations = insertCitations(answer, response.citations);
         }
-        // Display results with animation
-        displayResults(response.results);
+        
+        addMessage('assistant', answerWithCitations, response.results || [], response.citations);
+        renderConversation();
       } else {
         const errorMsg = response?.error || 'Unknown error';
-        const loadingContainer = resultsDiv.querySelector('.loading-container');
-        if (loadingContainer) {
-          loadingContainer.classList.add('fade-out');
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-        resultsDiv.innerHTML = `<div class="empty-state"><p style="color: #c62828;">Error: ${errorMsg}</p></div>`;
+        addMessage('assistant', `Error: ${errorMsg}`);
+        renderConversation();
         console.error('Search error:', errorMsg);
       }
     }
   );
 }
 
-// Display search results with smooth animations
-function displayResults(results: any[]) {
-  if (results.length === 0) {
-    resultsDiv.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">🔍</div>
-        <p>No results found. Try a different query.</p>
+
+// Conversation management functions
+function addMessage(role: 'user' | 'assistant', content: string, sources?: any[], citations?: any): void {
+  conversationHistory.push({
+    role,
+    content,
+    timestamp: new Date(),
+    sources,
+    citations
+  });
+}
+
+function clearConversation(): void {
+  conversationHistory = [];
+  renderConversation();
+}
+
+// Insert citation markers into answer text
+function insertCitations(answer: string, citationMap: any): string {
+  if (!citationMap || !citationMap.citations || citationMap.citations.length === 0) {
+    return answer;
+  }
+  
+  // Sort citations by position (reverse order to preserve indices when inserting)
+  const sortedCitations = [...citationMap.citations].sort((a, b) => b.end - a.end);
+  
+  let result = answer;
+  
+  // Insert citations from end to start to preserve positions
+  sortedCitations.forEach(citation => {
+    const sourceNumbers = citation.sourceIndices.map((idx: number) => idx + 1).join(',');
+    const citationMarker = `[${sourceNumbers}]`;
+    
+    // Insert citation marker at the end of the segment
+    const before = result.substring(0, citation.end);
+    const after = result.substring(citation.end);
+    result = before + citationMarker + after;
+  });
+  
+  return result;
+}
+
+// Helper function to escape HTML
+function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Scroll to bottom of messages
+function scrollToBottom(): void {
+  if (messagesContainer) {
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+}
+
+// Show typing indicator
+function showTypingIndicator(): void {
+  if (messagesContainer) {
+    const typingHtml = `
+      <div class="message message-assistant typing-message">
+        <div class="message-content">
+          <div class="typing-indicator">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
       </div>
     `;
-    // Collapse sidebar when no results
-    if (window.parent) {
-      window.parent.postMessage({ type: '__RAG_SIDEBAR_COLLAPSE__' }, '*');
+    messagesContainer.insertAdjacentHTML('beforeend', typingHtml);
+    scrollToBottom();
+  }
+}
+
+// Hide typing indicator
+function hideTypingIndicator(): void {
+  if (messagesContainer) {
+    const typingMessage = messagesContainer.querySelector('.typing-message');
+    if (typingMessage) {
+      typingMessage.remove();
     }
+  }
+}
+
+// Render entire conversation
+function renderConversation(): void {
+  if (!messagesContainer) return;
+  
+  if (conversationHistory.length === 0) {
+    messagesContainer.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">💬</div>
+        <p>Start a conversation by asking a question about this page</p>
+      </div>
+    `;
     return;
   }
-
-  // Auto-expand sidebar when results are shown
-  if (window.parent) {
-    window.parent.postMessage({ type: '__RAG_SIDEBAR_EXPAND__' }, '*');
-  }
-
-  // Use requestAnimationFrame for smooth rendering
-  requestAnimationFrame(() => {
-    resultsDiv.innerHTML = results
-      .map((result, i) => {
-        const headingPath = result.chunk.metadata.headingPath || [];
-        const pathText = headingPath.length > 0 
-          ? headingPath.join(' > ') 
-          : 'No heading';
-        const text = result.chunk.metadata.raw_text || result.chunk.text;
-        const preview = text.length > 200 ? text.substring(0, 200) + '...' : text;
-
-        return `
-          <div class="result-item" data-index="${i}">
-            <div class="result-header">
-              <strong>Result ${i + 1}</strong>
-              <span class="result-score">${result.score.toFixed(3)}</span>
-            </div>
-            <div class="result-path">${pathText}</div>
-            <div class="result-text">${preview}</div>
-          </div>
-        `;
-      })
-      .join('');
-
-    // Add result count indicator (optional, can be shown in status)
-    const resultCount = results.length;
-    console.log(`[Sidebar] Displaying ${resultCount} results with animations`);
-
-    // Add click handlers to scroll to results
-    resultsDiv.querySelectorAll('.result-item').forEach((item, i) => {
-      item.addEventListener('click', () => {
-        navigateToResult(results[i]);
+  
+  let html = '';
+  conversationHistory.forEach((message, msgIndex) => {
+    html += renderMessage(message, msgIndex);
+  });
+  
+  messagesContainer.innerHTML = html;
+  
+  // Add click handlers for sources
+  conversationHistory.forEach((message, msgIndex) => {
+    if (message.sources && message.sources.length > 0) {
+      message.sources.forEach((source, sourceIndex) => {
+        const sourceElement = messagesContainer.querySelector(`.message-${msgIndex} .source-item[data-source-index="${sourceIndex}"]`);
+        if (sourceElement) {
+          sourceElement.addEventListener('click', () => {
+            navigateToResult(source);
+          });
+        }
       });
+    }
+  });
+  
+  // Add click handlers for citations
+  messagesContainer.querySelectorAll('.citation').forEach(citationEl => {
+    citationEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const sourcesAttr = citationEl.getAttribute('data-sources');
+      const messageIndex = citationEl.getAttribute('data-message-index');
+      
+      if (sourcesAttr && messageIndex) {
+        const sourceIndices = sourcesAttr.split(',').map(s => parseInt(s.trim()));
+        const message = conversationHistory[parseInt(messageIndex)];
+        
+        if (message && message.sources) {
+          // Highlight clicked citation
+          citationEl.classList.add('citation-clicked');
+          
+          // Scroll to and highlight first source
+          if (sourceIndices.length > 0 && message.sources[sourceIndices[0]]) {
+            const sourceElement = messagesContainer.querySelector(
+              `.message-${messageIndex} .source-item[data-source-index="${sourceIndices[0]}"]`
+            ) as HTMLElement;
+            
+            if (sourceElement) {
+              // Remove previous highlights
+              messagesContainer.querySelectorAll('.source-item.highlighted').forEach(el => {
+                el.classList.remove('highlighted');
+              });
+              
+              // Highlight this source
+              sourceElement.classList.add('highlighted');
+              
+              // Scroll to source
+              sourceElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              
+              // Navigate to source on page
+              navigateToResult(message.sources[sourceIndices[0]]);
+            }
+          }
+        }
+      }
     });
   });
+  
+  scrollToBottom();
+}
+
+// Render a single message
+function renderMessage(message: Message, messageIndex: number): string {
+  const timeStr = message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  // Parse and render citations in the content
+  let contentHtml = escapeHtml(message.content);
+  
+  // Replace citation markers with clickable HTML
+  // Pattern: [1], [2], [1,2], etc.
+  contentHtml = contentHtml.replace(
+    /\[(\d+(?:,\d+)*)\]/g,
+    (match, sourceNumbers) => {
+      const sources = sourceNumbers.split(',').map((n: string) => parseInt(n.trim()) - 1); // Convert to 0-based
+      const sourceAttr = sources.join(',');
+      return `<span class="citation" data-sources="${sourceAttr}" data-message-index="${messageIndex}">[${sourceNumbers}]</span>`;
+    }
+  );
+  
+  let html = `
+    <div class="message message-${message.role} message-${messageIndex}">
+      <div class="message-content">
+        ${contentHtml}
+      </div>
+      <div class="message-time">${timeStr}</div>
+  `;
+  
+  // Add sources for assistant messages
+  if (message.role === 'assistant' && message.sources && message.sources.length > 0) {
+    html += `
+      <div class="message-sources">
+        <details class="sources-details">
+          <summary>Sources (${message.sources.length})</summary>
+          <div class="sources-list">
+            ${message.sources
+              .map((result, i) => {
+                const headingPath = result.chunk?.metadata?.headingPath || [];
+                const pathText = headingPath.length > 0 
+                  ? headingPath.join(' > ') 
+                  : 'No heading';
+                const text = result.chunk?.metadata?.raw_text || result.chunk?.text || '';
+                const preview = text.length > 200 ? text.substring(0, 200) + '...' : text;
+
+                return `
+                  <div class="source-item" data-source-index="${i}">
+                    <div class="result-header">
+                      <strong>Source ${i + 1}</strong>
+                      <span class="result-score">${result.score?.toFixed(3) || '0.000'}</span>
+                    </div>
+                    <div class="result-path">${escapeHtml(pathText)}</div>
+                    <div class="result-text">${escapeHtml(preview)}</div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </details>
+      </div>
+    `;
+  }
+  
+  html += `</div>`;
+  return html;
 }
 
 // Navigate to a search result

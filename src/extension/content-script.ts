@@ -4,6 +4,9 @@
 
 import { PageRAG } from '../core/PageRAG';
 import { logger } from '../utils/logger';
+import { LocalModelService } from '../core/LocalModelService';
+import { EmbeddingService } from '../core/EmbeddingService';
+import type { SearchResult } from '../types';
 
 // Inject highlight styles
 const style = document.createElement('style');
@@ -134,9 +137,226 @@ let sidebarContainer: HTMLDivElement | null = null;
 // Sidebar management - Define constants and functions before they're used
 const SIDEBAR_STORAGE_KEY = 'rag_sidebar_open';
 
+// Citation mapping interfaces and functions
+interface Citation {
+  start: number;
+  end: number;
+  sourceIndices: number[];
+  confidence: number;
+}
+
+interface CitationMap {
+  citations: Citation[];
+}
+
+interface AnswerSegment {
+  text: string;
+  start: number;
+  end: number;
+}
+
+// Split answer into segments (sentences)
+function splitAnswerIntoSegments(answer: string): AnswerSegment[] {
+  // Split by sentence boundaries (., !, ?)
+  const sentences = answer.split(/([.!?]+[\s\n]+)/).filter(s => s.trim());
+  const segments: AnswerSegment[] = [];
+  let currentPos = 0;
+  
+  for (let i = 0; i < sentences.length; i += 2) {
+    const sentence = sentences[i];
+    const punctuation = sentences[i + 1] || '';
+    const fullSegment = sentence + punctuation;
+    
+    if (sentence.trim().length > 0) {
+      segments.push({
+        text: sentence.trim(),
+        start: currentPos,
+        end: currentPos + sentence.trim().length
+      });
+    }
+    
+    currentPos += fullSegment.length;
+  }
+  
+  return segments;
+}
+
+// Calculate cosine similarity between two embeddings
+function calculateCosineSimilarity(embedding1: number[], embedding2: number[]): number {
+  if (embedding1.length !== embedding2.length) {
+    return 0;
+  }
+  
+  let dotProduct = 0;
+  let norm1 = 0;
+  let norm2 = 0;
+  
+  for (let i = 0; i < embedding1.length; i++) {
+    dotProduct += embedding1[i] * embedding2[i];
+    norm1 += embedding1[i] * embedding1[i];
+    norm2 += embedding2[i] * embedding2[i];
+  }
+  
+  const denominator = Math.sqrt(norm1) * Math.sqrt(norm2);
+  if (denominator === 0) return 0;
+  
+  return dotProduct / denominator;
+}
+
+// Extract key phrases from text (3-5 word n-grams)
+function extractKeyPhrases(text: string, minWords: number = 3, maxWords: number = 5): string[] {
+  const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const phrases: string[] = [];
+  
+  for (let n = minWords; n <= maxWords; n++) {
+    for (let i = 0; i <= words.length - n; i++) {
+      phrases.push(words.slice(i, i + n).join(' '));
+    }
+  }
+  
+  return phrases;
+}
+
+// Extract keywords from text (simple: nouns and important words)
+function extractKeywords(text: string): string[] {
+  const words = text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3); // Filter short words
+  
+  // Remove common stop words
+  const stopWords = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use']);
+  
+  return words.filter(w => !stopWords.has(w));
+}
+
+// Find keyword matches between segment and sources
+function findKeywordMatches(segment: string, sources: SearchResult[]): number[] {
+  const segmentKeywords = new Set(extractKeywords(segment));
+  const segmentPhrases = new Set(extractKeyPhrases(segment));
+  const matchedSources: number[] = [];
+  
+  sources.forEach((source, index) => {
+    const sourceText = source.chunk.metadata?.raw_text || source.chunk.text;
+    const sourceKeywords = new Set(extractKeywords(sourceText));
+    const sourcePhrases = new Set(extractKeyPhrases(sourceText));
+    
+    // Count keyword overlap
+    let keywordOverlap = 0;
+    segmentKeywords.forEach(kw => {
+      if (sourceKeywords.has(kw)) keywordOverlap++;
+    });
+    
+    // Check phrase matches
+    let phraseMatches = 0;
+    segmentPhrases.forEach(phrase => {
+      if (sourcePhrases.has(phrase)) phraseMatches++;
+    });
+    
+    // Match if significant overlap
+    const keywordRatio = keywordOverlap / Math.max(segmentKeywords.size, 1);
+    if (keywordRatio > 0.2 || phraseMatches > 0) {
+      matchedSources.push(index);
+    }
+  });
+  
+  return matchedSources;
+}
+
+// Map answer segments to sources using embedding similarity and keyword matching
+async function mapAnswerToSources(
+  answer: string,
+  sources: SearchResult[],
+  embedder: EmbeddingService
+): Promise<CitationMap> {
+  if (!answer || sources.length === 0) {
+    return { citations: [] };
+  }
+  
+  const segments = splitAnswerIntoSegments(answer);
+  if (segments.length === 0) {
+    return { citations: [] };
+  }
+  
+  // Use the provided embedder (should already be initialized)
+  await embedder.init();
+  
+  // Generate embeddings for answer segments
+  const segmentTexts = segments.map(s => s.text);
+  const segmentEmbeddings = await embedder.embedBatch(segmentTexts);
+  
+  // Get source embeddings
+  const sourceTexts = sources.map(s => s.chunk.metadata?.raw_text || s.chunk.text);
+  const sourceEmbeddings = await embedder.embedBatch(sourceTexts);
+  
+  const citations: Citation[] = [];
+  
+  // For each segment, find matching sources
+  segments.forEach((segment, segmentIndex) => {
+    const segmentEmbedding = segmentEmbeddings[segmentIndex];
+    if (!segmentEmbedding) return;
+    
+    // Calculate similarity with all sources
+    const similarities: Array<{ index: number; similarity: number }> = [];
+    
+    sourceEmbeddings.forEach((sourceEmbedding, sourceIndex) => {
+      if (sourceEmbedding) {
+        const similarity = calculateCosineSimilarity(segmentEmbedding, sourceEmbedding);
+        similarities.push({ index: sourceIndex, similarity });
+      }
+    });
+    
+    // Sort by similarity
+    similarities.sort((a, b) => b.similarity - a.similarity);
+    
+    // Find top-k sources (k=1-3) with similarity > threshold
+    const matchedSources: number[] = [];
+    const HIGH_THRESHOLD = 0.75;
+    const MEDIUM_THRESHOLD = 0.65;
+    const LOW_THRESHOLD = 0.55;
+    
+    // Add high confidence matches
+    similarities.forEach(({ index, similarity }) => {
+      if (similarity > HIGH_THRESHOLD) {
+        matchedSources.push(index);
+      } else if (similarity > MEDIUM_THRESHOLD && matchedSources.length < 2) {
+        matchedSources.push(index);
+      } else if (similarity > LOW_THRESHOLD && matchedSources.length === 0) {
+        // Only add if no other matches and check keyword match too
+        const keywordMatches = findKeywordMatches(segment.text, [sources[index]]);
+        if (keywordMatches.length > 0) {
+          matchedSources.push(index);
+        }
+      }
+    });
+    
+    // If no embedding matches, try keyword matching as fallback
+    if (matchedSources.length === 0) {
+      const keywordMatches = findKeywordMatches(segment.text, sources);
+      matchedSources.push(...keywordMatches.slice(0, 2)); // Max 2 from keyword matching
+    }
+    
+    // Create citation for this segment
+    if (matchedSources.length > 0) {
+      const topSimilarity = similarities.find(s => matchedSources.includes(s.index))?.similarity || 0.5;
+      citations.push({
+        start: segment.start,
+        end: segment.end,
+        sourceIndices: matchedSources,
+        confidence: topSimilarity
+      });
+    }
+  });
+  
+  // Sort citations by position
+  citations.sort((a, b) => a.start - b.start);
+  
+  return { citations };
+}
+
 // Message listener - set up once, outside init function
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  logger.log('Content script received message:', message.type);
+ // logger.log('Content script received message:', message.type);
   
   // Handle ping for checking if content script is loaded
   if (message.type === 'PING') {
@@ -154,9 +374,169 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     
     rag.search(message.query, message.options)
-      .then(results => {
-        logger.log('Search results:', results.length);
-        sendResponse({ success: true, results });
+      .then(async results => {
+        logger.log('[ContentScript] Search returned results:', results.length);
+        
+        // Validate search results
+        if (results.length === 0) {
+          logger.warn('[ContentScript] No search results found for query:', message.query);
+          sendResponse({ 
+            success: true, 
+            results: [],
+            answer: 'I couldn\'t find any relevant information on this page to answer your question. Try rephrasing your query or asking about a different topic.',
+            citations: { citations: [] }
+          });
+          return;
+        }
+        
+        // Log search results details
+        logger.log('[ContentScript] Top search results:');
+        results.slice(0, 5).forEach((result, idx) => {
+          const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
+          const preview = chunkText.substring(0, 100) + (chunkText.length > 100 ? '...' : '');
+          logger.log(`[ContentScript] Result ${idx + 1}: score=${result.score.toFixed(3)}, text="${preview}"`);
+        });
+        
+        // Generate LLM answer from relevant chunks
+        let answer: string | null = null;
+        
+        // Combine top chunks (up to 10) into context
+        // Use more chunks if available to get better context
+        const topChunks = results.slice(0, Math.min(15, results.length));
+        
+        // Validate chunks have content
+        const validChunks = topChunks.filter(result => {
+          const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
+          const hasContent = chunkText && chunkText.trim().length > 10; // At least 10 chars
+          if (!hasContent) {
+            logger.warn(`[ContentScript] Chunk ${result.chunk.id} is empty or too short: "${chunkText}"`);
+          }
+          return hasContent;
+        });
+        
+        if (validChunks.length === 0) {
+          logger.warn('[ContentScript] All chunks are empty or invalid');
+          sendResponse({ 
+            success: true, 
+            results,
+            answer: 'I found some results, but they don\'t contain readable content. The page might not be fully loaded yet.',
+            citations: { citations: [] }
+          });
+          return;
+        }
+        
+        logger.log(`[ContentScript] Using ${validChunks.length} valid chunks out of ${topChunks.length} results`);
+        logger.log(`[ContentScript] Total chunks available: ${results.length}`);
+        
+        // Build context from valid chunks
+        const context = validChunks
+          .map((result, idx) => {
+            const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
+            // Log full chunk text (not just preview) to debug truncation issues
+            logger.log(`[ContentScript] Chunk ${idx + 1} length: ${chunkText.length} chars`);
+            logger.log(`[ContentScript] Chunk ${idx + 1} full text: "${chunkText}"`);
+            logger.log(`[ContentScript] Chunk ${idx + 1} preview: "${chunkText.substring(0, 150)}..."`);
+            return `[Source ${idx + 1}]\n${chunkText}`;
+          })
+          .join('\n\n');
+        
+        logger.log('[ContentScript] Context length:', context.length, 'characters');
+        logger.log('[ContentScript] Context preview (first 500 chars):', context.substring(0, 500) + '...');
+        logger.log('[ContentScript] Context full text (for debugging):', context);
+        
+        // Validate context is substantial
+        if (context.length < 100) {
+          logger.warn('[ContentScript] Context is too short:', context.length, 'chars');
+          sendResponse({ 
+            success: true, 
+            results,
+            answer: 'I found some information, but it\'s not enough to provide a comprehensive answer. Try asking a more specific question.',
+            citations: { citations: [] }
+          });
+          return;
+        }
+        
+        try {
+          // Build prompt with conversation history if available
+          // Enhanced prompt to encourage detailed, comprehensive answers
+          let prompt = '';
+          
+          // Add conversation history context (last 5-10 messages)
+          // Simplified prompt format optimized for T5/Flan models
+          if (message.conversationHistory && message.conversationHistory.length > 0) {
+            const recentHistory = message.conversationHistory.slice(-10);
+            const historyText = recentHistory
+              .map((msg: { role: string; content: string }) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+              .join('\n');
+            
+            // Simplified prompt for T5 models - more direct and less verbose
+            prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
+
+Previous conversation:
+${historyText}
+
+Question: ${message.query}
+
+Context:
+${context}
+
+Answer:`;
+          } else {
+            // No conversation history - simplified prompt for T5
+            prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
+
+Question: ${message.query}
+
+Context:
+${context}
+
+Answer:`;
+          }
+          
+          // Initialize and call LLM
+          const llmService = LocalModelService.getInstance();
+          await llmService.init();
+          
+          // Log the prompt for debugging
+          logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
+          logger.log('[ContentScript] LLM Prompt (first 500 chars):', prompt.substring(0, 500) + '...');
+          logger.log('[ContentScript] Query:', message.query);
+          logger.log('[ContentScript] Calling LLM with context length:', context.length);
+          
+          answer = await llmService.generate(prompt, {
+            max_new_tokens: 600, // Increased from 300 to 600 for longer responses
+            temperature: 0.4, // Slightly increased for more natural responses
+            top_p: 0.9
+          });
+          
+          logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
+          logger.log('[ContentScript] LLM answer:', answer);
+        } catch (error) {
+          console.error('[ContentScript] LLM generation failed:', error);
+          // Continue without answer - will show chunks only
+          logger.warn('LLM generation failed, falling back to chunks only');
+        }
+        
+        // Generate citation mapping if we have an answer
+        let citations: CitationMap = { citations: [] };
+        if (answer && results.length > 0) {
+          try {
+            const embedder = EmbeddingService.getInstance();
+            await embedder.init();
+            citations = await mapAnswerToSources(answer, results, embedder);
+            logger.log('[ContentScript] Generated citations:', citations.citations.length);
+          } catch (error) {
+            console.error('[ContentScript] Citation mapping failed:', error);
+            // Continue without citations
+          }
+        }
+        
+        sendResponse({ 
+          success: true, 
+          results,
+          answer: answer || null,
+          citations: citations
+        });
       })
       .catch(error => {
         console.error('Search error:', error);

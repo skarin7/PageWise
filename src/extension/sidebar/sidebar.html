@@ -12,11 +12,13 @@
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
       width: 100%;
-      height: 100%;
+      height: 100vh;
       display: flex;
       flex-direction: column;
       background: #ffffff;
       overflow: hidden;
+      margin: 0;
+      padding: 0;
     }
     
     .header {
@@ -27,11 +29,47 @@
       justify-content: space-between;
       align-items: center;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      flex-shrink: 0;
     }
     
     .header h1 {
       font-size: 18px;
       font-weight: 600;
+      margin: 0;
+    }
+    
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    
+    .clear-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+      position: relative;
+      z-index: 100;
+      pointer-events: auto;
+      flex-shrink: 0;
+    }
+    
+    .clear-btn:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    
+    .clear-btn:active {
+      background: rgba(255,255,255,0.4);
     }
     
     .close-btn {
@@ -85,58 +123,75 @@
       color: #c62828;
     }
     
-    .search-container {
+    /* Chat container - scrollable messages area */
+    .chat-container {
+      flex: 1;
+      overflow-y: auto;
       padding: 16px;
-      border-bottom: 1px solid #e0e0e0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
     
-    .search-box {
+    /* Input container - fixed at bottom */
+    .input-container {
+      flex-shrink: 0;
+      padding: 12px 16px;
+      border-top: 1px solid #e0e0e0;
+      background: #ffffff;
+    }
+    
+    .input-box {
       display: flex;
       gap: 8px;
+      align-items: center;
     }
     
-    .search-input {
+    .chat-input {
       flex: 1;
       padding: 10px 12px;
       border: 2px solid #e0e0e0;
-      border-radius: 8px;
+      border-radius: 20px;
       font-size: 14px;
       outline: none;
       transition: border-color 0.2s;
+      font-family: inherit;
     }
     
-    .search-input:focus {
+    .chat-input:focus {
       border-color: #667eea;
     }
     
-    .search-btn {
+    .send-btn {
       padding: 10px 20px;
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white;
       border: none;
-      border-radius: 8px;
+      border-radius: 20px;
       cursor: pointer;
       font-size: 14px;
       font-weight: 500;
       transition: opacity 0.2s;
+      white-space: nowrap;
     }
     
-    .search-btn:hover {
+    .send-btn:hover {
       opacity: 0.9;
       transform: translateY(-1px);
       box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
     }
     
-    .search-btn:active {
+    .send-btn:active {
       transform: translateY(0);
     }
     
-    .search-btn:disabled {
+    .send-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
     
-    .search-btn.searching {
+    .send-btn.searching {
       animation: pulse 1.5s ease-in-out infinite;
     }
     
@@ -148,48 +203,161 @@
       }
     }
     
-    .results {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px;
-      min-height: 0; /* Allow flex shrinking */
+    /* Message bubbles */
+    .message {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 12px;
+      animation: fadeInUp 0.3s ease-out;
+      max-width: 85%;
+      word-wrap: break-word;
     }
     
-    .result-item {
-      margin-bottom: 16px;
-      padding: 12px;
+    .message-user {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+    
+    .message-assistant {
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+    
+    .message-content {
+      padding: 10px 14px;
+      border-radius: 18px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    
+    .message-user .message-content {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-bottom-right-radius: 4px;
+    }
+    
+    .message-assistant .message-content {
+      background: #f0f0f0;
+      color: #333;
+      border-bottom-left-radius: 4px;
+    }
+    
+    .message-time {
+      font-size: 11px;
+      color: #999;
+      margin-top: 4px;
+      padding: 0 4px;
+    }
+    
+    .message-sources {
+      margin-top: 8px;
+      width: 100%;
+    }
+    
+    .sources-details {
+      font-size: 12px;
+      color: #667eea;
+      cursor: pointer;
+    }
+    
+    .sources-details summary {
+      padding: 6px 0;
+      font-weight: 500;
+      user-select: none;
+    }
+    
+    .sources-details summary:hover {
+      color: #764ba2;
+    }
+    
+    .sources-list {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #e0e0e0;
+    }
+    
+    .source-item {
+      margin-bottom: 8px;
+      padding: 8px;
       background: #f9f9f9;
       border: 1px solid #e0e0e0;
-      border-radius: 8px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      opacity: 0;
-      transform: translateY(10px);
-      animation: fadeInUp 0.4s ease-out forwards;
-      will-change: transform, opacity;
+      transition: all 0.2s;
+      font-size: 12px;
     }
     
-    .result-item:nth-child(1) { animation-delay: 0.05s; }
-    .result-item:nth-child(2) { animation-delay: 0.1s; }
-    .result-item:nth-child(3) { animation-delay: 0.15s; }
-    .result-item:nth-child(4) { animation-delay: 0.2s; }
-    .result-item:nth-child(5) { animation-delay: 0.25s; }
-    .result-item:nth-child(6) { animation-delay: 0.3s; }
-    .result-item:nth-child(7) { animation-delay: 0.35s; }
-    .result-item:nth-child(8) { animation-delay: 0.4s; }
-    .result-item:nth-child(9) { animation-delay: 0.45s; }
-    .result-item:nth-child(10) { animation-delay: 0.5s; }
-    
-    .result-item:hover {
+    .source-item:hover {
       background: #f0f0f0;
       border-color: #667eea;
-      transform: translateY(-3px) scale(1.01);
-      box-shadow: 0 6px 12px rgba(102, 126, 234, 0.15);
     }
     
-    .result-item:active {
-      transform: translateY(-1px) scale(0.99);
-      transition: all 0.1s;
+    .source-item.highlighted {
+      background: #e3f2fd;
+      border-color: #667eea;
+      border-width: 2px;
+      box-shadow: 0 0 8px rgba(102, 126, 234, 0.3);
+    }
+    
+    /* Citation styling */
+    .citation {
+      color: #667eea;
+      font-size: 0.85em;
+      vertical-align: super;
+      cursor: pointer;
+      font-weight: 500;
+      padding: 0 2px;
+      transition: all 0.2s;
+    }
+    
+    .citation:hover {
+      color: #764ba2;
+      text-decoration: underline;
+      background: rgba(102, 126, 234, 0.1);
+      border-radius: 3px;
+    }
+    
+    .citation.citation-clicked {
+      color: #764ba2;
+      font-weight: 600;
+      background: rgba(102, 126, 234, 0.15);
+      border-radius: 3px;
+    }
+    
+    /* Typing indicator */
+    .typing-indicator {
+      display: flex;
+      gap: 4px;
+      padding: 10px 14px;
+    }
+    
+    .typing-indicator span {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #999;
+      animation: typing 1.4s infinite;
+    }
+    
+    .typing-indicator span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    
+    .typing-indicator span:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+    
+    @keyframes typing {
+      0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.7;
+      }
+      30% {
+        transform: translateY(-10px);
+        opacity: 1;
+      }
     }
     
     @keyframes fadeInUp {
@@ -298,35 +466,39 @@
       from { opacity: 0; }
       to { opacity: 1; }
     }
+    
   </style>
 </head>
 <body>
   <div class="header">
     <h1>💬 Chat with Page</h1>
-    <button class="close-btn" id="close-btn" title="Close sidebar">×</button>
+    <div class="header-actions">
+      <button class="clear-btn" id="clear-btn" title="Clear conversation">🗑️</button>
+      <button class="close-btn" id="close-btn" title="Close sidebar">×</button>
+    </div>
   </div>
   
   <div class="status" id="status">
     <span class="loading-spinner" id="status-spinner"></span> <span id="status-text">Checking status...</span>
   </div>
   
-  <div class="search-container">
-    <div class="search-box">
-      <input 
-        type="text" 
-        id="query-input" 
-        class="search-input" 
-        placeholder="Ask a question about this page..."
-        autocomplete="off"
-      />
-      <button id="search-button" class="search-btn">Search</button>
+  <div class="chat-container" id="messages-container">
+    <div class="empty-state">
+      <div class="empty-state-icon">💬</div>
+      <p>Start a conversation by asking a question about this page</p>
     </div>
   </div>
   
-  <div class="results" id="results">
-    <div class="empty-state">
-      <div class="empty-state-icon">🔍</div>
-      <p>Enter a query to search the page content</p>
+  <div class="input-container">
+    <div class="input-box">
+      <input 
+        type="text" 
+        id="query-input" 
+        class="chat-input" 
+        placeholder="Ask a question about this page..."
+        autocomplete="off"
+      />
+      <button id="search-button" class="send-btn">Send</button>
     </div>
   </div>
   

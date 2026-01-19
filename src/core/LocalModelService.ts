@@ -160,14 +160,21 @@ export class LocalModelService {
     }
 
     try {
+      // Use provided options or defaults
       const generationOptions = {
-        max_new_tokens: options?.max_new_tokens || 50, // Short output for CSS selector
-        temperature: options?.temperature || 0.1, // Low temperature for deterministic output
-        top_p: options?.top_p || 0.9,
+        max_new_tokens: options?.max_new_tokens ?? 600, // Default to 600 for detailed answers
+        temperature: options?.temperature ?? 0.4, // Higher temperature for more natural responses
+        top_p: options?.top_p ?? 0.9,
         return_full_text: false
       };
 
+      console.log('[LocalModelService] Generating with options:', generationOptions);
+      console.log('[LocalModelService] Prompt length:', prompt.length);
+      console.log('[LocalModelService] Prompt (first 300 chars):', prompt.substring(0, 300));
+
       const result = await this.pipeline(prompt, generationOptions);
+      
+      console.log('[LocalModelService] Raw result:', result);
       
       // Extract text from result
       // Result format depends on pipeline type
@@ -182,6 +189,7 @@ export class LocalModelService {
         generatedText = String(result);
       }
 
+      console.log('[LocalModelService] Extracted text:', generatedText);
       return generatedText.trim();
     } catch (error) {
       console.error('[LocalModelService] Error generating text:', error);
