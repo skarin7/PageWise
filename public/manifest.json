@@ -42,7 +42,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' https://huggingface.co https://cdn.jsdelivr.net https://*.hf.space;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:11434 http://127.0.0.1:11434 http://localhost:* http://127.0.0.1:* https://huggingface.co https://cdn.jsdelivr.net https://*.hf.space;"
   }
 }
 

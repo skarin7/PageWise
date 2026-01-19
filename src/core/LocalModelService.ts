@@ -8,29 +8,64 @@ import { pipeline, env } from '@xenova/transformers';
 // Configure Transformers.js for browser extension
 env.allowLocalModels = false;
 
+export type LocalModelProvider = 'transformers' | 'ollama';
+
+export interface LocalModelOptions {
+  provider?: LocalModelProvider;
+  modelName?: string;
+  ollamaUrl?: string;
+  requestTimeoutMs?: number;
+}
+
 // Singleton instance to share across pages
 let globalLocalModelService: LocalModelService | null = null;
 
 export class LocalModelService {
   private pipeline: any = null;
   private modelName: string;
+  private provider: LocalModelProvider;
+  private ollamaUrl: string;
+  private requestTimeoutMs: number;
   private initialized = false;
   private initPromise: Promise<void> | null = null; // Prevent concurrent initializations
 
-  constructor(modelName: string = 'Xenova/LaMini-Flan-T5-783M') {
-    this.modelName = modelName;
+  constructor(options: string | LocalModelOptions = 'Xenova/LaMini-Flan-T5-783M') {
+    if (typeof options === 'string') {
+      this.modelName = options;
+      this.provider = 'transformers';
+      this.ollamaUrl = 'http://localhost:11434/api/generate';
+      this.requestTimeoutMs = 20000;
+    } else {
+      this.provider = options.provider || 'transformers';
+      const defaultModelName = this.provider === 'ollama' ? 'llama3' : 'Xenova/LaMini-Flan-T5-783M';
+      this.modelName = options.modelName || defaultModelName;
+      this.ollamaUrl = options.ollamaUrl || 'http://localhost:11434/api/generate';
+      this.requestTimeoutMs = options.requestTimeoutMs ?? 20000;
+    }
   }
 
   /**
    * Get or create singleton instance
    */
-  static getInstance(modelName?: string): LocalModelService {
+  static getInstance(options?: string | LocalModelOptions): LocalModelService {
     if (!globalLocalModelService) {
-      globalLocalModelService = new LocalModelService(modelName);
-    } else if (modelName && globalLocalModelService.modelName !== modelName) {
-      // If different model requested, reset and create new instance
-      globalLocalModelService = null;
-      globalLocalModelService = new LocalModelService(modelName);
+      globalLocalModelService = new LocalModelService(options);
+    } else if (options) {
+      const nextOptions = typeof options === 'string' ? { modelName: options } : options;
+      const nextProvider = nextOptions.provider || 'transformers';
+      const nextDefaultModel = nextProvider === 'ollama' ? 'llama3' : 'Xenova/LaMini-Flan-T5-783M';
+      const nextModelName = nextOptions.modelName || nextDefaultModel;
+      const nextOllamaUrl = nextOptions.ollamaUrl || 'http://localhost:11434/api/generate';
+
+      if (
+        globalLocalModelService.provider !== nextProvider ||
+        globalLocalModelService.modelName !== nextModelName ||
+        globalLocalModelService.ollamaUrl !== nextOllamaUrl
+      ) {
+        // If different model/provider requested, reset and create new instance
+        globalLocalModelService = null;
+        globalLocalModelService = new LocalModelService(options);
+      }
     }
     return globalLocalModelService;
   }
@@ -68,6 +103,12 @@ export class LocalModelService {
     const startTime = Date.now();
     
     try {
+      if (this.provider === 'ollama') {
+        console.log('[LocalModelService] Using Ollama provider');
+        this.initialized = true;
+        return;
+      }
+
       console.log('[LocalModelService] Loading model:', this.modelName);
       console.log('[LocalModelService] Transformers.js will automatically use cache if available...');
       
@@ -151,6 +192,10 @@ export class LocalModelService {
     temperature?: number;
     top_p?: number;
   }): Promise<string> {
+    if (this.provider === 'ollama') {
+      return this.generateWithOllama(prompt, options);
+    }
+
     if (!this.pipeline) {
       await this.init();
     }
@@ -197,10 +242,166 @@ export class LocalModelService {
     }
   }
 
+  private async generateWithOllama(prompt: string, options?: {
+    max_new_tokens?: number;
+    temperature?: number;
+    top_p?: number;
+  }): Promise<string> {
+    await this.init();
+
+    // Use background script proxy to avoid CORS issues
+    // Check if we're in a browser extension context
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      return this.generateWithOllamaViaProxy(prompt, options);
+    }
+
+    // Fallback to direct fetch (for testing outside extension context)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    try {
+      const response = await fetch(this.ollamaUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: this.modelName,
+          prompt,
+          stream: false,
+          options: {
+            temperature: options?.temperature ?? 0.4,
+            top_p: options?.top_p ?? 0.9,
+            num_predict: options?.max_new_tokens ?? 600
+          }
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`Ollama API error: ${response.status} ${errorText}`);
+      }
+
+      const data = await response.json();
+      const output = (data.response || '').trim();
+      console.log('[LocalModelService] Ollama response length:', output.length);
+      return output;
+    } catch (error) {
+      console.error('[LocalModelService] Ollama generation failed:', error);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private async generateWithOllamaViaProxy(prompt: string, options?: {
+    max_new_tokens?: number;
+    temperature?: number;
+    top_p?: number;
+  }): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        reject(new Error('Chrome extension API not available'));
+        return;
+      }
+
+      // Build options object - only include valid Ollama options
+      const ollamaOptions: Record<string, any> = {};
+      if (options?.temperature !== undefined) {
+        ollamaOptions.temperature = options.temperature;
+      }
+      if (options?.max_new_tokens !== undefined) {
+        ollamaOptions.num_predict = options.max_new_tokens;
+      }
+      // top_p might not be supported by all models, make it optional
+      if (options?.top_p !== undefined) {
+        ollamaOptions.top_p = options.top_p;
+      }
+      
+      // Build request body matching Ollama API format exactly
+      const requestBody: Record<string, any> = {
+        model: this.modelName,
+        prompt: prompt,
+        stream: false
+      };
+      
+      // Only include options if we have any
+      if (Object.keys(ollamaOptions).length > 0) {
+        requestBody.options = ollamaOptions;
+      }
+      
+      console.log('[LocalModelService] Sending Ollama request:', {
+        url: this.ollamaUrl,
+        model: this.modelName,
+        body: requestBody
+      });
+      
+      chrome.runtime.sendMessage(
+        {
+          type: 'OLLAMA_REQUEST',
+          url: this.ollamaUrl,
+          body: requestBody,
+          timeout: this.requestTimeoutMs
+        },
+        (response) => {
+          // Check for Chrome extension API errors
+          if (chrome.runtime.lastError) {
+            console.error('[LocalModelService] Chrome runtime error:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!response) {
+            reject(new Error('No response from background script'));
+            return;
+          }
+
+          if (!response.success) {
+            const errorMsg = response.error || 'Ollama request failed';
+            console.error('[LocalModelService] Ollama request failed:', {
+              error: errorMsg,
+              model: this.modelName,
+              url: this.ollamaUrl
+            });
+            
+            // Provide helpful error message for 403
+            if (errorMsg.includes('403')) {
+              reject(new Error(
+                `Ollama 403 Error: Model "${this.modelName}" may not exist or is not available. ` +
+                `Please verify:\n` +
+                `1. The model name is correct (use: ollama list to see available models)\n` +
+                `2. The model is pulled: ollama pull ${this.modelName}\n` +
+                `3. Ollama is running: ollama serve\n` +
+                `Original error: ${errorMsg}`
+              ));
+            } else {
+              reject(new Error(errorMsg));
+            }
+            return;
+          }
+
+          const output = (response.data?.response || '').trim();
+          if (!output) {
+            console.warn('[LocalModelService] Ollama returned empty response');
+            reject(new Error('Ollama returned empty response. Check if the model is working correctly.'));
+            return;
+          }
+          
+          console.log('[LocalModelService] Ollama response length (via proxy):', output.length);
+          resolve(output);
+        }
+      );
+    });
+  }
+
   /**
    * Check if service is initialized
    */
   isInitialized(): boolean {
+    if (this.provider === 'ollama') {
+      return this.initialized;
+    }
     return this.initialized && this.pipeline !== null;
   }
 

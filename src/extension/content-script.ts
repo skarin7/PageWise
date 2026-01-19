@@ -5,6 +5,7 @@
 import { PageRAG } from '../core/PageRAG';
 import { logger } from '../utils/logger';
 import { LocalModelService } from '../core/LocalModelService';
+import { getLLMConfig } from '../utils/llmContentExtraction';
 import { EmbeddingService } from '../core/EmbeddingService';
 import type { SearchResult } from '../types';
 
@@ -494,7 +495,14 @@ Answer:`;
           }
           
           // Initialize and call LLM
-          const llmService = LocalModelService.getInstance();
+          const llmConfig = await getLLMConfig().catch(() => null);
+          const provider = llmConfig?.provider === 'ollama' ? 'ollama' : 'transformers';
+          const llmService = LocalModelService.getInstance({
+            provider,
+            modelName: llmConfig?.model,
+            ollamaUrl: llmConfig?.apiUrl,
+            requestTimeoutMs: llmConfig?.timeout
+          });
           await llmService.init();
           
           // Log the prompt for debugging

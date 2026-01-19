@@ -144,12 +144,63 @@ async function callTransformersAPI(config: LLMConfig, prompt: string): Promise<s
 }
 
 /**
- * Call Ollama API
+ * Call Ollama API via background script proxy to avoid CORS issues
  */
 async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string> {
   const apiUrl = config.apiUrl || DEFAULT_CONFIG.apiUrl!;
   const model = config.model || DEFAULT_CONFIG.model!;
+  const timeout = config.timeout || 30000;
   
+  // Use background script proxy if available (browser extension context)
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    return new Promise((resolve, reject) => {
+      // Try minimal request first (no options) to avoid 403 errors
+      // Some Ollama versions/models may reject requests with options
+      const requestBody = {
+        model: model,
+        prompt: prompt,
+        stream: false
+        // Start without options - add them only if needed
+      };
+      
+      chrome.runtime.sendMessage(
+        {
+          type: 'OLLAMA_REQUEST',
+          url: apiUrl,
+          body: requestBody,
+          timeout: timeout
+        },
+        (response) => {
+          // Check for Chrome extension API errors
+          if (chrome.runtime.lastError) {
+            console.error('[LLMContentExtraction] Chrome runtime error:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!response) {
+            reject(new Error('No response from background script'));
+            return;
+          }
+
+          if (!response.success) {
+            reject(new Error(response.error || 'Ollama request failed'));
+            return;
+          }
+
+          const output = (response.data?.response || '').trim();
+          if (!output) {
+            reject(new Error('Ollama returned empty response'));
+            return;
+          }
+          
+          resolve(output);
+        }
+      );
+    });
+  }
+  
+  // Fallback to direct fetch (for testing outside extension context)
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
