@@ -17,7 +17,7 @@ const DEFAULT_CONFIG: LLMConfig = {
   enabled: false,
   provider: 'transformers', // Use local model by default
   model: 'Xenova/LaMini-Flan-T5-783M', // Small, fast instruction model
-  timeout: 15000 // Longer timeout for first model load
+  timeout: 120000 // 2 minutes timeout for extraction (handles large pages)
 };
 
 /**
@@ -145,50 +145,71 @@ async function callTransformersAPI(config: LLMConfig, prompt: string): Promise<s
 
 /**
  * Call Ollama API via background script proxy to avoid CORS issues
+ * Uses streaming to prevent timeouts on large pages
  */
 async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string> {
   const apiUrl = config.apiUrl || DEFAULT_CONFIG.apiUrl!;
   const model = config.model || DEFAULT_CONFIG.model!;
-  const timeout = config.timeout || 30000;
+  const timeout = config.timeout || 120000; // 2 minutes default for extraction
   
   // Use background script proxy if available (browser extension context)
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.connect) {
     return new Promise((resolve, reject) => {
-      // Try minimal request first (no options) to avoid 403 errors
-      // Some Ollama versions/models may reject requests with options
+      // Build request body with streaming enabled
       const requestBody = {
         model: model,
         prompt: prompt,
-        stream: false
-        // Start without options - add them only if needed
+        stream: true // Use streaming to prevent timeouts
       };
       
-      chrome.runtime.sendMessage(
-        {
-          type: 'OLLAMA_REQUEST',
-          url: apiUrl,
-          body: requestBody,
-          timeout: timeout
-        },
-        (response) => {
-          // Check for Chrome extension API errors
-          if (chrome.runtime.lastError) {
-            console.error('[LLMContentExtraction] Chrome runtime error:', chrome.runtime.lastError);
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-
-          if (!response) {
-            reject(new Error('No response from background script'));
-            return;
-          }
-
-          if (!response.success) {
-            reject(new Error(response.error || 'Ollama request failed'));
-            return;
-          }
-
-          const output = (response.data?.response || '').trim();
+      let fullResponse = '';
+      let hasReceivedData = false;
+      
+      // Use long-lived connection for streaming
+      const messagePort = chrome.runtime.connect({ name: 'ollama-stream' });
+      
+      // Set up timeout for connection establishment (not total generation time)
+      const connectionTimeout = setTimeout(() => {
+        if (!hasReceivedData) {
+          messagePort.disconnect();
+          reject(new Error('Request timeout: Connection to Ollama failed or took too long'));
+        }
+      }, timeout);
+      
+      // Send initial request
+      messagePort.postMessage({
+        type: 'OLLAMA_STREAM_START',
+        url: apiUrl,
+        body: requestBody,
+        timeout: timeout
+      });
+      
+      // Listen for streaming chunks
+      messagePort.onMessage.addListener((message: any) => {
+        if (message.success === false) {
+          clearTimeout(connectionTimeout);
+          messagePort.disconnect();
+          reject(new Error(message.error || 'Ollama request failed'));
+          return;
+        }
+        
+        // Mark that we've received data (connection established)
+        if (!hasReceivedData) {
+          hasReceivedData = true;
+          clearTimeout(connectionTimeout); // Clear connection timeout once stream starts
+        }
+        
+        // Accumulate chunks
+        if (message.chunk) {
+          fullResponse += message.chunk;
+        }
+        
+        // Check if done
+        if (message.done) {
+          clearTimeout(connectionTimeout);
+          messagePort.disconnect();
+          
+          const output = (message.fullResponse || fullResponse).trim();
           if (!output) {
             reject(new Error('Ollama returned empty response'));
             return;
@@ -196,11 +217,24 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
           
           resolve(output);
         }
-      );
+      });
+      
+      // Handle disconnection (error case)
+      messagePort.onDisconnect.addListener(() => {
+        clearTimeout(connectionTimeout);
+        if (!hasReceivedData) {
+          reject(new Error('Connection to background script lost'));
+        } else if (fullResponse.trim()) {
+          // If we have partial response, resolve with what we have
+          resolve(fullResponse.trim());
+        } else {
+          reject(new Error('Connection closed before receiving response'));
+        }
+      });
     });
   }
   
-  // Fallback to direct fetch (for testing outside extension context)
+  // Fallback to direct fetch with streaming (for testing outside extension context)
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
@@ -209,7 +243,7 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
     body: JSON.stringify({
       model: model,
       prompt: prompt,
-      stream: false,
+      stream: true, // Use streaming
       options: {
         temperature: 0.1, // Low temperature for deterministic results
         num_predict: 100 // Limit response length
@@ -221,8 +255,43 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
     throw new Error(`Ollama API error: ${response.statusText}`);
   }
   
-  const data = await response.json();
-  return (data.response || '').trim();
+  // Handle streaming response
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  
+  if (!reader) {
+    throw new Error('Stream not available');
+  }
+  
+  let fullResponse = '';
+  let buffer = '';
+  
+  while (true) {
+    const { done, value } = await reader.read();
+    
+    if (done) {
+      break;
+    }
+    
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const data = JSON.parse(line);
+          if (data.response) {
+            fullResponse += data.response;
+          }
+        } catch (e) {
+          // Skip invalid JSON lines
+        }
+      }
+    }
+  }
+  
+  return fullResponse.trim();
 }
 
 /**
@@ -376,8 +445,11 @@ export async function findMainContentByLLM(
     
     // Call appropriate API
     let response: string;
+    // Use increased timeout for extraction (handles large pages)
     const timeout = llmConfig.timeout || DEFAULT_CONFIG.timeout!;
     
+    // Note: For streaming requests (Ollama), the timeout only applies to connection establishment
+    // Once streaming starts, the connection stays alive as long as chunks are arriving
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     
@@ -485,13 +557,29 @@ export async function getLLMConfig(): Promise<LLMConfig> {
     }
   }
   
+  // Try persistent storage as fallback (for settings that survive uninstall)
+  try {
+    const { getPersistentStorage } = await import('./persistentStorage');
+    const storage = getPersistentStorage();
+    const persistentPrefs = await storage.loadPreferences();
+    if (persistentPrefs?.llmConfig) {
+      console.log('[LLMContentExtraction] Loaded config from persistent storage');
+      return { ...DEFAULT_CONFIG, ...persistentPrefs.llmConfig };
+    }
+  } catch (error) {
+    // Persistent storage not available or no data - that's OK, use default
+    console.debug('[LLMContentExtraction] Persistent storage not available or empty:', error);
+  }
+  
   return DEFAULT_CONFIG;
 }
 
 /**
  * Save LLM config to storage
+ * @param config - The LLM configuration to save
+ * @param persistAfterUninstall - If true, also save to persistent storage that survives uninstall
  */
-export async function saveLLMConfig(config: LLMConfig): Promise<void> {
+export async function saveLLMConfig(config: LLMConfig, persistAfterUninstall: boolean = false): Promise<void> {
   // Ensure enabled is true when config is explicitly set (so it's used for both extraction and search/RAG)
   const configToSave: LLMConfig = {
     ...config,
@@ -515,6 +603,18 @@ export async function saveLLMConfig(config: LLMConfig): Promise<void> {
       console.log('[LLMContentExtraction] Config saved to localStorage:', configToSave);
     } catch (error) {
       console.warn('[LLMContentExtraction] Could not save config to localStorage:', error);
+    }
+  }
+
+  // Optionally save to persistent storage (survives uninstall)
+  if (persistAfterUninstall) {
+    try {
+      const { getPersistentStorage } = await import('./persistentStorage');
+      const storage = getPersistentStorage();
+      await storage.savePreferences({ llmConfig: configToSave });
+      console.log('[LLMContentExtraction] Config saved to persistent storage');
+    } catch (error) {
+      console.warn('[LLMContentExtraction] Could not save to persistent storage:', error);
     }
   }
 }

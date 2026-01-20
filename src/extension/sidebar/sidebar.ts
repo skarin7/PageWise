@@ -145,7 +145,7 @@ async function loadSettings() {
         } else if (provider === 'openai') {
           apiUrlInput.value = 'https://api.openai.com/v1';
         } else if (provider === 'custom') {
-          apiUrlInput.value = '';
+          apiUrlInput.value = 'https://api.openai.com/v1';
         }
       }
     }
@@ -175,8 +175,20 @@ async function loadSettings() {
   } catch (error) {
     console.error('[Settings] Failed to load settings:', error);
     // Set defaults on error
-    if (providerSelect) providerSelect.value = 'transformers';
-    if (apiUrlInput) apiUrlInput.value = 'http://localhost:11434/api/generate';
+    const defaultProvider = providerSelect?.value || 'transformers';
+    if (providerSelect) providerSelect.value = defaultProvider;
+    if (apiUrlInput) {
+      // Set default based on provider
+      if (defaultProvider === 'ollama') {
+        apiUrlInput.value = 'http://localhost:11434/api/generate';
+      } else if (defaultProvider === 'openai') {
+        apiUrlInput.value = 'https://api.openai.com/v1';
+      } else if (defaultProvider === 'custom') {
+        apiUrlInput.value = 'https://api.openai.com/v1';
+      } else {
+        apiUrlInput.value = 'http://localhost:11434/api/generate';
+      }
+    }
     if (timeoutInput) timeoutInput.value = '30000';
     updateProviderConfigVisibility();
   }
@@ -198,16 +210,31 @@ function updateProviderConfigVisibility() {
     if (apiUrlGroup && apiUrlInput && apiUrlHelp) {
       if (provider === 'ollama') {
         apiUrlGroup.style.display = 'block';
+        if (apiUrlLabel) apiUrlLabel.textContent = 'API URL';
         apiUrlInput.placeholder = 'http://localhost:11434/api/generate';
         apiUrlHelp.textContent = 'Ollama API endpoint URL. Change this to refresh the model list.';
+        // Set default if empty
+        if (!apiUrlInput.value || apiUrlInput.value === 'https://api.openai.com/v1') {
+          apiUrlInput.value = 'http://localhost:11434/api/generate';
+        }
       } else if (provider === 'openai') {
         apiUrlGroup.style.display = 'block';
+        if (apiUrlLabel) apiUrlLabel.textContent = 'Base URL';
         apiUrlInput.placeholder = 'https://api.openai.com/v1';
         apiUrlHelp.textContent = 'OpenAI API base URL (default: https://api.openai.com/v1)';
+        // Set default if empty
+        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434/api/generate') {
+          apiUrlInput.value = 'https://api.openai.com/v1';
+        }
       } else if (provider === 'custom') {
         apiUrlGroup.style.display = 'block';
+        if (apiUrlLabel) apiUrlLabel.textContent = 'Base URL';
         apiUrlInput.placeholder = 'https://your-api.com/v1';
         apiUrlHelp.textContent = 'Custom OpenAI-compatible API base URL (must end with /v1)';
+        // Set default if empty
+        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434/api/generate') {
+          apiUrlInput.value = 'https://api.openai.com/v1';
+        }
       }
     }
     
@@ -361,9 +388,8 @@ async function saveSettings() {
         config.apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
       } else if (provider === 'openai' || provider === 'custom') {
         const apiUrl = apiUrlInput?.value?.trim();
-        if (apiUrl) {
-          config.apiUrl = apiUrl;
-        }
+        // Default to OpenAI base URL if not provided
+        config.apiUrl = apiUrl || 'https://api.openai.com/v1';
         
         // API key is required for OpenAI and custom
         const apiKey = apiKeyInput?.value?.trim();
@@ -491,6 +517,7 @@ const providerSelect = document.getElementById('provider') as HTMLSelectElement;
 const providerConfigGroup = document.getElementById('provider-config-group') as HTMLDivElement;
 const apiUrlGroup = document.getElementById('api-url-group') as HTMLDivElement;
 const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
+const apiUrlLabel = document.querySelector('label[for="api-url"]') as HTMLLabelElement;
 const apiUrlHelp = document.getElementById('api-url-help') as HTMLElement;
 const apiKeyGroup = document.getElementById('api-key-group') as HTMLDivElement;
 const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
@@ -498,6 +525,9 @@ const apiKeyHelp = document.getElementById('api-key-help') as HTMLElement;
 const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const modelStatus = document.getElementById('model-status') as HTMLElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
+const settingsExportBtn = document.getElementById('settings-export') as HTMLButtonElement;
+const settingsImportBtn = document.getElementById('settings-import') as HTMLButtonElement;
+const settingsImportFile = document.getElementById('settings-import-file') as HTMLInputElement;
 
 // State
 let currentTabId: number | null = null;
@@ -641,6 +671,76 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       await saveSettings();
+    });
+  }
+
+  // Export settings
+  if (settingsExportBtn) {
+    settingsExportBtn.addEventListener('click', async () => {
+      try {
+        const { getPersistentStorage } = await import('../../utils/persistentStorage');
+        const storage = getPersistentStorage();
+        const config = await getLLMConfigFn();
+        
+        if (!config) {
+          alert('No settings to export. Please configure your settings first.');
+          return;
+        }
+
+        await storage.savePreferences({ llmConfig: config });
+        await storage.downloadPreferences(`pagewise-settings-${new Date().toISOString().split('T')[0]}.json`);
+        
+        // Show success message
+        const originalText = settingsExportBtn.textContent;
+        settingsExportBtn.textContent = '✓ Exported!';
+        settingsExportBtn.style.background = '#4caf50';
+        setTimeout(() => {
+          settingsExportBtn.textContent = originalText;
+          settingsExportBtn.style.background = '';
+        }, 2000);
+      } catch (error) {
+        console.error('Failed to export settings:', error);
+        alert('Failed to export settings. Check console for details.');
+      }
+    });
+  }
+
+  // Import settings
+  if (settingsImportBtn && settingsImportFile) {
+    settingsImportBtn.addEventListener('click', () => {
+      settingsImportFile.click();
+    });
+
+    settingsImportFile.addEventListener('change', async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const { getPersistentStorage } = await import('../../utils/persistentStorage');
+        const storage = getPersistentStorage();
+        
+        await storage.importPreferences(text);
+        
+        // Reload settings to show imported config
+        await loadSettings();
+        
+        // Show success message
+        const originalText = settingsImportBtn.textContent;
+        settingsImportBtn.textContent = '✓ Imported!';
+        settingsImportBtn.style.background = '#4caf50';
+        setTimeout(() => {
+          settingsImportBtn.textContent = originalText;
+          settingsImportBtn.style.background = '';
+        }, 2000);
+        
+        // Clear file input
+        settingsImportFile.value = '';
+      } catch (error) {
+        console.error('Failed to import settings:', error);
+        alert(`Failed to import settings: ${error instanceof Error ? error.message : String(error)}`);
+        settingsImportFile.value = '';
+      }
     });
   }
 

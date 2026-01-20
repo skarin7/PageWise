@@ -446,17 +446,81 @@ export class VectorStore {
   }
 
   /**
+   * Create a content fingerprint from text by normalizing and removing dynamic content
+   * This creates a stable hash that ignores formatting and truly dynamic content (timestamps, relative times)
+   * but preserves meaningful dates that are part of the actual content
+   */
+  private createContentFingerprint(text: string): string {
+    if (!text || text.trim().length === 0) {
+      return '';
+    }
+
+    let normalized = text;
+
+    // Step 1: Normalize whitespace (collapse multiple spaces/newlines to single space)
+    normalized = normalized.trim().replace(/\s+/g, ' ');
+
+    // Step 2: Remove/replace only truly dynamic content patterns (not meaningful dates)
+    
+    // Timestamps with time components (these change on every load): 2024-01-15T10:30:00Z
+    // Use a simpler regex to avoid TypeScript parsing issues
+    normalized = normalized.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[Z0-9:+-]*/g, '[TIMESTAMP]');
+    
+    // Time-only formats (these are usually dynamic): 10:30 AM, 14:30:45
+    normalized = normalized.replace(/\b\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)\b/gi, '[TIME]');
+    
+    // Relative time expressions (these update constantly): "2 hours ago", "yesterday", "last week"
+    normalized = normalized.replace(/\b\d+\s*(second|minute|hour|day|week|month|year)s?\s+ago\b/gi, '[RELATIVE_TIME]');
+    normalized = normalized.replace(/\b(yesterday|today|tomorrow|last\s+(week|month|year)|next\s+(week|month|year))\b/gi, '[RELATIVE_TIME]');
+    
+    // Common dynamic phrases that often precede timestamps (remove the phrase, keep any date)
+    normalized = normalized.replace(/\b(last\s+updated?|as\s+of|updated\s+on|modified\s+on):?\s*/gi, '');
+    
+    // Counters and metrics (these change frequently): "Current count: 123", "1,234 views"
+    normalized = normalized.replace(/\b(current\s+count|count|total|number\s+of):?\s*\d+[,.]?\d*\b/gi, (match) => {
+      return match.replace(/\d+[,.]?\d*/, '[NUMBER]');
+    });
+    
+    // Remove common tracking/analytics patterns
+    normalized = normalized.replace(/\b(visitor|view|pageview|hit)s?:?\s*\d+[,.]?\d*\b/gi, '[METRIC]');
+    
+    // Step 3: Remove extra spaces created by replacements
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    
+    return normalized;
+  }
+
+  /**
    * Calculate content hash from chunks
    * This hash changes when content changes, allowing us to detect stale embeddings
    */
   private calculateContentHash(chunks: Record<string, Chunk>): string {
-    // Create a deterministic hash from chunk IDs and text content
+    // Create a deterministic hash from chunk IDs, structural identifiers, and content fingerprints
     const chunkEntries = Object.entries(chunks)
       .sort(([a], [b]) => a.localeCompare(b)) // Sort for consistency
-      .map(([id, chunk]) => `${id}:${chunk.text.substring(0, 100)}`) // Use first 100 chars for performance
-      .join('|');
+      .map(([id, chunk]) => {
+        // Use content fingerprint instead of raw text for stable comparison
+        const rawText = chunk.metadata.raw_text || chunk.text;
+        const fingerprint = this.createContentFingerprint(rawText);
+        
+        // Include structural identifiers for additional stability
+        const headingPath = chunk.metadata.headingPath?.join('|') || '';
+        const contentLength = rawText.length; // Include length as part of fingerprint
+        
+        // Combine: chunk ID, heading path (structural), content length, and fingerprint
+        // Use first 1000 chars of fingerprint for performance (should be enough after normalization)
+        const fingerprintSample = fingerprint.substring(0, 1000);
+        return `${id}|${headingPath}|${contentLength}|${fingerprintSample}`;
+      })
+      .join('||'); // Use double pipe to separate chunks
     
-    return this.hashCode(chunkEntries);
+    // Include chunk count and structural information
+    const chunkCount = Object.keys(chunks).length;
+    
+    // Create a composite hash that's stable but detects real content changes
+    const hashInput = `${chunkCount}||${chunkEntries}`;
+    
+    return this.hashCode(hashInput);
   }
 
   /**

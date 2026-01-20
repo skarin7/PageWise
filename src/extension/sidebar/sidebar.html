@@ -805,12 +805,12 @@
         
         <div id="provider-config-group" style="display: none;">
           <div class="form-group" id="api-url-group">
-            <label for="api-url">API URL</label>
+            <label for="api-url">Base URL</label>
             <input 
               type="text" 
               id="api-url" 
               name="apiUrl" 
-              placeholder="http://localhost:11434/api/generate"
+              placeholder="https://api.openai.com/v1"
             />
             <small id="api-url-help">API endpoint URL. Change this to refresh the model list.</small>
           </div>
@@ -846,6 +846,22 @@
             />
             <small>Request timeout in milliseconds (default: 30000)</small>
           </div>
+        </div>
+        
+        <div class="form-group" style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px;">
+          <label style="font-weight: 600; margin-bottom: 10px; display: block;">Data Management</label>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-secondary" id="settings-export" style="flex: 1; min-width: 120px;">
+              📥 Export Settings
+            </button>
+            <button type="button" class="btn btn-secondary" id="settings-import" style="flex: 1; min-width: 120px;">
+              📤 Import Settings
+            </button>
+          </div>
+          <small style="display: block; margin-top: 8px; color: #666;">
+            Export your settings to a JSON file that you can import later, even after reinstalling the extension.
+          </small>
+          <input type="file" id="settings-import-file" accept=".json" style="display: none;">
         </div>
         
         <div class="form-actions">

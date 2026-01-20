@@ -34,8 +34,8 @@ style.textContent = `
   /* Sidebar styles */
   #rag-sidebar-container {
     position: fixed;
-    top: 0;
-    right: 0;
+    top: 50px;
+    right: 15px;
     width: 400px;
     height: 350px; /* Default fixed height - more compact */
     max-height: 100vh; /* Don't exceed viewport */
@@ -54,7 +54,7 @@ style.textContent = `
   }
   
   #rag-sidebar-container.expanded {
-    height: 100vh;
+    height: calc(100vh - 60px);
   }
   
   /* Resize handles */
@@ -80,12 +80,11 @@ style.textContent = `
   
   /* Height resize handle (top bar) - exclude close button area */
   #rag-sidebar-container .resize-height-handle {
-    position: absolute;
+    position: relative;
     top: 0;
     left: 0;
     right: 50px; /* Leave space for close button */
     height: 40px;
-    cursor: ns-resize;
     z-index: 5;
     background: transparent;
     pointer-events: auto;
