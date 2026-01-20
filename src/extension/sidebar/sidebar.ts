@@ -107,6 +107,135 @@ if (typeof self !== 'undefined' && self !== window) {
   (self as any).getLLMConfig = getLLMConfigFn;
 }
 
+// Settings Modal Functions
+async function openSettings() {
+  if (settingsModal) {
+    await loadSettings();
+    settingsModal.classList.add('show');
+  }
+}
+
+function closeSettings() {
+  if (settingsModal) {
+    settingsModal.classList.remove('show');
+  }
+}
+
+async function loadSettings() {
+  try {
+    console.log('[Settings] Loading current LLM configuration...');
+    const config = await getLLMConfigFn();
+    console.log('[Settings] Loaded config:', config);
+    
+    if (config && typeof config === 'object') {
+      // Populate form fields with existing config
+      if (providerSelect) {
+        providerSelect.value = config.provider || 'transformers';
+        console.log('[Settings] Set provider to:', providerSelect.value);
+      }
+      
+      if (modelInput) {
+        // Use the model from config, or default based on provider
+        const defaultModel = config.provider === 'ollama' 
+          ? 'llama3' 
+          : 'Xenova/LaMini-Flan-T5-783M';
+        modelInput.value = config.model || defaultModel;
+        console.log('[Settings] Set model to:', modelInput.value);
+      }
+      
+      if (apiUrlInput) {
+        apiUrlInput.value = config.apiUrl || 'http://localhost:11434/api/generate';
+        console.log('[Settings] Set API URL to:', apiUrlInput.value);
+      }
+      
+      if (timeoutInput) {
+        timeoutInput.value = config.timeout?.toString() || '30000';
+        console.log('[Settings] Set timeout to:', timeoutInput.value);
+      }
+    } else {
+      // No config found, set defaults
+      console.log('[Settings] No existing config found, using defaults');
+      if (providerSelect) {
+        providerSelect.value = 'transformers';
+      }
+      if (modelInput) {
+        modelInput.value = 'Xenova/LaMini-Flan-T5-783M';
+      }
+      if (apiUrlInput) {
+        apiUrlInput.value = 'http://localhost:11434/api/generate';
+      }
+      if (timeoutInput) {
+        timeoutInput.value = '30000';
+      }
+    }
+    
+    // Update provider-specific fields visibility
+    updateProviderFields();
+    console.log('[Settings] Settings loaded successfully');
+  } catch (error) {
+    console.error('[Settings] Failed to load settings:', error);
+    // Set defaults on error
+    if (providerSelect) providerSelect.value = 'transformers';
+    if (modelInput) modelInput.value = 'Xenova/LaMini-Flan-T5-783M';
+    if (apiUrlInput) apiUrlInput.value = 'http://localhost:11434/api/generate';
+    if (timeoutInput) timeoutInput.value = '30000';
+    updateProviderFields();
+  }
+}
+
+function updateProviderFields() {
+  if (providerSelect && apiUrlGroup) {
+    const provider = providerSelect.value;
+    if (provider === 'ollama') {
+      apiUrlGroup.style.display = 'flex';
+    } else {
+      apiUrlGroup.style.display = 'none';
+    }
+  }
+}
+
+async function saveSettings() {
+  try {
+    const config: any = {
+      enabled: true,
+      provider: providerSelect?.value || 'transformers',
+      model: modelInput?.value || '',
+      timeout: parseInt(timeoutInput?.value || '30000', 10)
+    };
+
+    if (providerSelect?.value === 'ollama') {
+      config.apiUrl = apiUrlInput?.value || 'http://localhost:11434/api/generate';
+    }
+
+    // Only save if model is provided (or use default for transformers)
+    if (!config.model && config.provider === 'transformers') {
+      config.model = 'Xenova/LaMini-Flan-T5-783M';
+    }
+
+    await configureLLMExtractionFn(config);
+    
+    // Show success message
+    const saveButton = document.getElementById('settings-save') as HTMLButtonElement;
+    if (saveButton) {
+      const originalText = saveButton.textContent;
+      saveButton.textContent = '✓ Saved!';
+      saveButton.style.background = '#4caf50';
+      setTimeout(() => {
+        saveButton.textContent = originalText;
+        saveButton.style.background = '';
+      }, 2000);
+    }
+    
+    // Close modal after a short delay
+    setTimeout(() => {
+      closeSettings();
+    }, 1500);
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+    alert('Failed to save settings. Please check the console for details.');
+  }
+}
+
 // Direct test - try calling getLLMConfig to see if it works
 (async () => {
   console.log('');
@@ -190,6 +319,17 @@ const statusText = document.getElementById('status-text') as HTMLSpanElement;
 const statusSpinner = document.getElementById('status-spinner') as HTMLSpanElement;
 const closeBtn = document.getElementById('close-btn') as HTMLButtonElement;
 const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
+// Settings button will be queried inside DOMContentLoaded to ensure it exists
+let settingsBtn: HTMLButtonElement | null = null;
+const settingsModal = document.getElementById('settings-modal') as HTMLDivElement;
+const settingsClose = document.getElementById('settings-close') as HTMLButtonElement;
+const settingsCancel = document.getElementById('settings-cancel') as HTMLButtonElement;
+const settingsForm = document.getElementById('settings-form') as HTMLFormElement;
+const providerSelect = document.getElementById('provider') as HTMLSelectElement;
+const modelInput = document.getElementById('model') as HTMLInputElement;
+const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
+const apiUrlGroup = document.getElementById('api-url-group') as HTMLDivElement;
+const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
 
 // State
 let currentTabId: number | null = null;
@@ -222,6 +362,60 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Settings button - query inside DOMContentLoaded to ensure it exists
+  settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement;
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('[Settings] Settings button clicked');
+      openSettings();
+    });
+    console.log('[Settings] Settings button event listener attached');
+  } else {
+    console.error('[Settings] Settings button not found in DOM');
+  }
+
+  // Settings modal close buttons
+  if (settingsClose) {
+    settingsClose.addEventListener('click', () => {
+      closeSettings();
+    });
+  }
+
+  if (settingsCancel) {
+    settingsCancel.addEventListener('click', () => {
+      closeSettings();
+    });
+  }
+
+  // Close modal on outside click
+  if (settingsModal) {
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target === settingsModal) {
+        closeSettings();
+      }
+    });
+  }
+
+  // Provider change handler
+  if (providerSelect) {
+    providerSelect.addEventListener('change', () => {
+      updateProviderFields();
+    });
+  }
+
+  // Settings form submit
+  if (settingsForm) {
+    settingsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await saveSettings();
+    });
+  }
+
+  // Load current settings
+  loadSettings();
+
   // Search button
   searchButton.addEventListener('click', handleSearch);
 
@@ -238,6 +432,9 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Initialize conversation display
   renderConversation();
+  
+  // Load settings on page load (to ensure defaults are set)
+  loadSettings();
 });
 
 // Check if content script is available

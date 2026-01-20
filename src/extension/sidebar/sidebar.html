@@ -100,6 +100,210 @@
       background: rgba(255,255,255,0.4);
     }
     
+    .settings-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+      position: relative;
+      z-index: 100;
+      pointer-events: auto;
+      flex-shrink: 0;
+    }
+    
+    .settings-btn:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    
+    .settings-btn:active {
+      background: rgba(255,255,255,0.4);
+    }
+    
+    /* Settings Modal */
+    .settings-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 10000;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-out;
+    }
+    
+    .settings-modal.show {
+      display: flex;
+    }
+    
+    .settings-content {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      animation: slideUp 0.3s ease-out;
+    }
+    
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .settings-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    
+    .settings-header h2 {
+      margin: 0;
+      font-size: 20px;
+      color: #333;
+    }
+    
+    .settings-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #999;
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: all 0.2s;
+    }
+    
+    .settings-close:hover {
+      background: #f0f0f0;
+      color: #333;
+    }
+    
+    .settings-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .form-group label {
+      font-size: 14px;
+      font-weight: 500;
+      color: #333;
+    }
+    
+    .form-group input,
+    .form-group select {
+      padding: 10px 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    
+    .form-group input:focus,
+    .form-group select:focus {
+      border-color: #667eea;
+    }
+    
+    .form-group input[type="password"] {
+      font-family: monospace;
+    }
+    
+    .form-group small {
+      font-size: 12px;
+      color: #666;
+      margin-top: -4px;
+    }
+    
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 8px;
+      padding-top: 20px;
+      border-top: 2px solid #e0e0e0;
+    }
+    
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+    }
+    
+    .btn-secondary {
+      background: #f0f0f0;
+      color: #333;
+    }
+    
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+    
+    .settings-info {
+      background: #e3f2fd;
+      border: 1px solid #90caf9;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      color: #1565c0;
+      margin-bottom: 20px;
+    }
+    
+    .settings-info strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    
     .status {
       padding: 12px 16px;
       background: #f5f5f5;
@@ -414,6 +618,7 @@
       line-height: 1.5;
       display: -webkit-box;
       -webkit-line-clamp: 3;
+      line-clamp: 3;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
@@ -473,6 +678,7 @@
   <div class="header">
     <h1>💬 Chat with Page</h1>
     <div class="header-actions">
+      <button class="settings-btn" id="settings-btn" title="Settings">⚙️</button>
       <button class="clear-btn" id="clear-btn" title="Clear conversation">🗑️</button>
       <button class="close-btn" id="close-btn" title="Close sidebar">×</button>
     </div>
@@ -499,6 +705,72 @@
         autocomplete="off"
       />
       <button id="search-button" class="send-btn">Send</button>
+    </div>
+  </div>
+  
+  <!-- Settings Modal -->
+  <div class="settings-modal" id="settings-modal">
+    <div class="settings-content">
+      <div class="settings-header">
+        <h2>⚙️ LLM Settings</h2>
+        <button class="settings-close" id="settings-close">×</button>
+      </div>
+      
+      <div class="settings-info">
+        <strong>💡 Default Behavior</strong>
+        If no API key is configured, the extension will use the local transformer model by default.
+      </div>
+      
+      <form class="settings-form" id="settings-form">
+        <div class="form-group">
+          <label for="provider">Provider</label>
+          <select id="provider" name="provider">
+            <option value="transformers">Transformers.js (Local)</option>
+            <option value="ollama">Ollama (Local)</option>
+          </select>
+          <small>Choose between local transformer model or Ollama</small>
+        </div>
+        
+        <div class="form-group" id="model-group">
+          <label for="model">Model Name</label>
+          <input 
+            type="text" 
+            id="model" 
+            name="model" 
+            placeholder="e.g., qwen3:8b or Xenova/LaMini-Flan-T5-783M"
+          />
+          <small>Model name for the selected provider</small>
+        </div>
+        
+        <div class="form-group" id="api-url-group" style="display: none;">
+          <label for="api-url">Ollama API URL</label>
+          <input 
+            type="text" 
+            id="api-url" 
+            name="apiUrl" 
+            placeholder="http://localhost:11434/api/generate"
+          />
+          <small>Ollama API endpoint URL</small>
+        </div>
+        
+        <div class="form-group" id="timeout-group">
+          <label for="timeout">Request Timeout (ms)</label>
+          <input 
+            type="number" 
+            id="timeout" 
+            name="timeout" 
+            placeholder="30000"
+            min="5000"
+            max="300000"
+          />
+          <small>Request timeout in milliseconds (default: 30000)</small>
+        </div>
+        
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="settings-save">Save Settings</button>
+        </div>
+      </form>
     </div>
   </div>
   

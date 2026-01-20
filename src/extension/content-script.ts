@@ -158,6 +158,10 @@ interface AnswerSegment {
 
 // Split answer into segments (sentences)
 function splitAnswerIntoSegments(answer: string): AnswerSegment[] {
+  if (!answer || answer.trim().length === 0) {
+    return [];
+  }
+  
   // Split by sentence boundaries (., !, ?)
   const sentences = answer.split(/([.!?]+[\s\n]+)/).filter(s => s.trim());
   const segments: AnswerSegment[] = [];
@@ -165,6 +169,11 @@ function splitAnswerIntoSegments(answer: string): AnswerSegment[] {
   
   for (let i = 0; i < sentences.length; i += 2) {
     const sentence = sentences[i];
+    // Guard against undefined sentence
+    if (!sentence) {
+      continue;
+    }
+    
     const punctuation = sentences[i + 1] || '';
     const fullSegment = sentence + punctuation;
     
