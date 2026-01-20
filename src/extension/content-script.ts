@@ -512,21 +512,31 @@ Answer:`;
           
           // Use the configured provider, or default to transformers
           // This ensures the same config is used for both extraction and search/RAG
-          const provider = llmConfig?.provider === 'ollama' ? 'ollama' : 'transformers';
+          const provider = llmConfig?.provider || 'transformers';
           
           logger.log('[ContentScript] Using LLM config for search/RAG:', {
             provider,
             model: llmConfig?.model,
             apiUrl: llmConfig?.apiUrl,
+            apiKey: llmConfig?.apiKey ? '***' : undefined,
             timeout: llmConfig?.timeout
           });
           
-          const llmService = LocalModelService.getInstance({
-            provider,
+          const llmServiceOptions: any = {
+            provider: provider as any,
             modelName: llmConfig?.model,
-            ollamaUrl: llmConfig?.apiUrl,
             requestTimeoutMs: llmConfig?.timeout
-          });
+          };
+          
+          // Set provider-specific options
+          if (provider === 'ollama') {
+            llmServiceOptions.ollamaUrl = llmConfig?.apiUrl;
+          } else if (provider === 'openai' || provider === 'custom') {
+            llmServiceOptions.apiUrl = llmConfig?.apiUrl;
+            llmServiceOptions.apiKey = llmConfig?.apiKey;
+          }
+          
+          const llmService = LocalModelService.getInstance(llmServiceOptions);
           await llmService.init();
           
           // Log the prompt for debugging
@@ -535,7 +545,7 @@ Answer:`;
           logger.log('[ContentScript] Query:', message.query);
           logger.log('[ContentScript] Calling LLM with context length:', context.length);
           
-          // Use streaming for Ollama, non-streaming for transformers
+          // Use streaming for Ollama, non-streaming for others
           if (provider === 'ollama') {
             let streamingAnswer = '';
             

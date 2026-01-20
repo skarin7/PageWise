@@ -8,12 +8,14 @@ import { pipeline, env } from '@xenova/transformers';
 // Configure Transformers.js for browser extension
 env.allowLocalModels = false;
 
-export type LocalModelProvider = 'transformers' | 'ollama';
+export type LocalModelProvider = 'transformers' | 'ollama' | 'openai' | 'custom';
 
 export interface LocalModelOptions {
   provider?: LocalModelProvider;
   modelName?: string;
   ollamaUrl?: string;
+  apiUrl?: string; // For OpenAI and custom providers
+  apiKey?: string; // For OpenAI and custom providers
   requestTimeoutMs?: number;
 }
 
@@ -25,6 +27,8 @@ export class LocalModelService {
   private modelName: string;
   private provider: LocalModelProvider;
   private ollamaUrl: string;
+  private apiUrl?: string; // For OpenAI and custom providers
+  private apiKey?: string; // For OpenAI and custom providers
   private requestTimeoutMs: number;
   private initialized = false;
   private initPromise: Promise<void> | null = null; // Prevent concurrent initializations
@@ -40,6 +44,8 @@ export class LocalModelService {
       const defaultModelName = this.provider === 'ollama' ? 'llama3' : 'Xenova/LaMini-Flan-T5-783M';
       this.modelName = options.modelName || defaultModelName;
       this.ollamaUrl = options.ollamaUrl || 'http://localhost:11434/api/generate';
+      this.apiUrl = options.apiUrl;
+      this.apiKey = options.apiKey;
       this.requestTimeoutMs = options.requestTimeoutMs ?? 20000;
     }
   }
@@ -57,10 +63,15 @@ export class LocalModelService {
       const nextModelName = nextOptions.modelName || nextDefaultModel;
       const nextOllamaUrl = nextOptions.ollamaUrl || 'http://localhost:11434/api/generate';
 
+      const nextApiUrl = nextOptions.apiUrl;
+      const nextApiKey = nextOptions.apiKey;
+      
       if (
         globalLocalModelService.provider !== nextProvider ||
         globalLocalModelService.modelName !== nextModelName ||
-        globalLocalModelService.ollamaUrl !== nextOllamaUrl
+        globalLocalModelService.ollamaUrl !== nextOllamaUrl ||
+        globalLocalModelService.apiUrl !== nextApiUrl ||
+        globalLocalModelService.apiKey !== nextApiKey
       ) {
         // If different model/provider requested, reset and create new instance
         globalLocalModelService = null;
@@ -203,6 +214,10 @@ export class LocalModelService {
         return this.generateWithOllamaStream(prompt, options);
       }
       return this.generateWithOllama(prompt, options);
+    }
+    
+    if (this.provider === 'openai' || this.provider === 'custom') {
+      return this.generateWithOpenAICompatible(prompt, options);
     }
 
     if (!this.pipeline) {
@@ -415,10 +430,127 @@ export class LocalModelService {
    * Check if service is initialized
    */
   isInitialized(): boolean {
-    if (this.provider === 'ollama') {
-      return this.initialized;
+    if (this.provider === 'ollama' || this.provider === 'openai' || this.provider === 'custom') {
+      return true; // These providers don't need initialization
     }
     return this.initialized && this.pipeline !== null;
+  }
+  
+  /**
+   * Generate text using OpenAI-compatible API
+   */
+  private async generateWithOpenAICompatible(prompt: string, options?: {
+    max_new_tokens?: number;
+    temperature?: number;
+    top_p?: number;
+    onChunk?: (chunk: string) => void;
+  }): Promise<string> {
+    if (!this.apiUrl) {
+      throw new Error('API URL is required for OpenAI-compatible providers');
+    }
+    
+    if (!this.apiKey) {
+      throw new Error('API key is required for OpenAI-compatible providers');
+    }
+    
+    const baseUrl = this.apiUrl.endsWith('/v1') ? this.apiUrl : `${this.apiUrl}/v1`;
+    const chatUrl = `${baseUrl}/chat/completions`;
+    
+    // Use background script proxy to avoid CORS issues
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      return this.generateWithOpenAICompatibleViaProxy(chatUrl, prompt, options);
+    }
+    
+    // Fallback to direct fetch (for testing outside extension context)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    
+    try {
+      const response = await fetch(chatUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.modelName,
+          messages: [
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
+          temperature: options?.temperature ?? 0.4,
+          max_tokens: options?.max_new_tokens ?? 600
+        }),
+        signal: controller.signal
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`OpenAI-compatible API error: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const output = (data.choices?.[0]?.message?.content || '').trim();
+      console.log('[LocalModelService] OpenAI-compatible response length:', output.length);
+      return output;
+    } catch (error) {
+      console.error('[LocalModelService] OpenAI-compatible generation failed:', error);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  
+  private async generateWithOpenAICompatibleViaProxy(chatUrl: string, prompt: string, options?: {
+    max_new_tokens?: number;
+    temperature?: number;
+    top_p?: number;
+    onChunk?: (chunk: string) => void;
+  }): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        reject(new Error('Chrome extension API not available'));
+        return;
+      }
+      
+      const requestBody = {
+        model: this.modelName,
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: options?.temperature ?? 0.4,
+        max_tokens: options?.max_new_tokens ?? 600
+      };
+      
+      chrome.runtime.sendMessage(
+        {
+          type: 'OPENAI_REQUEST',
+          url: chatUrl,
+          body: requestBody,
+          apiKey: this.apiKey,
+          timeout: this.requestTimeoutMs
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          
+          if (!response || !response.success) {
+            reject(new Error(response?.error || 'OpenAI-compatible API request failed'));
+            return;
+          }
+          
+          const output = (response.data?.choices?.[0]?.message?.content || '').trim();
+          resolve(output);
+        }
+      );
+    });
   }
 
   /**

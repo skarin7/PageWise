@@ -127,94 +127,150 @@ async function loadSettings() {
     const config = await getLLMConfigFn();
     console.log('[Settings] Loaded config:', config);
     
-    if (config && typeof config === 'object' && config.provider === 'ollama') {
-      // Ollama is configured
-      if (useCustomLLMCheckbox) {
-        useCustomLLMCheckbox.checked = true;
-      }
-      
-      if (apiUrlInput) {
-        apiUrlInput.value = config.apiUrl || 'http://localhost:11434/api/generate';
-        console.log('[Settings] Set API URL to:', apiUrlInput.value);
-      }
-      
-      if (timeoutInput) {
-        timeoutInput.value = config.timeout?.toString() || '30000';
-        console.log('[Settings] Set timeout to:', timeoutInput.value);
-      }
-      
-      // Update visibility first, then fetch models
-      updateOllamaConfigVisibility();
-      
-      // Wait a bit for the dropdown to be populated, then set the saved model
-      setTimeout(() => {
-        if (modelSelect && config.model) {
-          modelSelect.value = config.model;
-          console.log('[Settings] Set model to:', config.model);
+    const provider = config?.provider || 'transformers';
+    
+    // Set provider dropdown
+    if (providerSelect) {
+      providerSelect.value = provider;
+    }
+    
+    // Set API URL
+    if (apiUrlInput) {
+      if (config?.apiUrl) {
+        apiUrlInput.value = config.apiUrl;
+      } else {
+        // Set defaults based on provider
+        if (provider === 'ollama') {
+          apiUrlInput.value = 'http://localhost:11434/api/generate';
+        } else if (provider === 'openai') {
+          apiUrlInput.value = 'https://api.openai.com/v1';
+        } else if (provider === 'custom') {
+          apiUrlInput.value = '';
         }
-      }, 1000);
-    } else {
-      // Default: Transformers.js (no custom LLM)
-      if (useCustomLLMCheckbox) {
-        useCustomLLMCheckbox.checked = false;
       }
-      
-      // Set defaults for Ollama fields (in case user enables it)
-      if (apiUrlInput) {
-        apiUrlInput.value = 'http://localhost:11434/api/generate';
-      }
-      if (timeoutInput) {
-        timeoutInput.value = '30000';
-      }
-      
-      // Update visibility
-      updateOllamaConfigVisibility();
+    }
+    
+    // Set API key (if present)
+    if (apiKeyInput && config?.apiKey) {
+      apiKeyInput.value = config.apiKey;
+    }
+    
+    // Set timeout
+    if (timeoutInput) {
+      timeoutInput.value = config?.timeout?.toString() || '30000';
+    }
+    
+    // Update visibility and fetch models
+    updateProviderConfigVisibility();
+    
+    // Wait a bit for the dropdown to be populated, then set the saved model
+    if (config?.model && modelSelect) {
+      setTimeout(() => {
+        modelSelect.value = config.model;
+        console.log('[Settings] Set model to:', config.model);
+      }, 1500);
     }
     
     console.log('[Settings] Settings loaded successfully');
   } catch (error) {
     console.error('[Settings] Failed to load settings:', error);
     // Set defaults on error
-    if (useCustomLLMCheckbox) useCustomLLMCheckbox.checked = false;
+    if (providerSelect) providerSelect.value = 'transformers';
     if (apiUrlInput) apiUrlInput.value = 'http://localhost:11434/api/generate';
     if (timeoutInput) timeoutInput.value = '30000';
-    updateOllamaConfigVisibility();
+    updateProviderConfigVisibility();
   }
 }
 
-function updateOllamaConfigVisibility() {
-  if (useCustomLLMCheckbox && ollamaConfigGroup) {
-    if (useCustomLLMCheckbox.checked) {
-      ollamaConfigGroup.style.display = 'block';
-      // Fetch models when checkbox is checked
-      fetchOllamaModels();
-    } else {
-      ollamaConfigGroup.style.display = 'none';
+function updateProviderConfigVisibility() {
+  if (!providerSelect || !providerConfigGroup) return;
+  
+  const provider = providerSelect.value;
+  
+  if (provider === 'transformers') {
+    // Hide all provider-specific config for transformers (default)
+    providerConfigGroup.style.display = 'none';
+  } else {
+    // Show provider-specific config
+    providerConfigGroup.style.display = 'block';
+    
+    // Update API URL field based on provider
+    if (apiUrlGroup && apiUrlInput && apiUrlHelp) {
+      if (provider === 'ollama') {
+        apiUrlGroup.style.display = 'block';
+        apiUrlInput.placeholder = 'http://localhost:11434/api/generate';
+        apiUrlHelp.textContent = 'Ollama API endpoint URL. Change this to refresh the model list.';
+      } else if (provider === 'openai') {
+        apiUrlGroup.style.display = 'block';
+        apiUrlInput.placeholder = 'https://api.openai.com/v1';
+        apiUrlHelp.textContent = 'OpenAI API base URL (default: https://api.openai.com/v1)';
+      } else if (provider === 'custom') {
+        apiUrlGroup.style.display = 'block';
+        apiUrlInput.placeholder = 'https://your-api.com/v1';
+        apiUrlHelp.textContent = 'Custom OpenAI-compatible API base URL (must end with /v1)';
+      }
     }
+    
+    // Show/hide API key field
+    if (apiKeyGroup) {
+      if (provider === 'ollama') {
+        apiKeyGroup.style.display = 'none';
+      } else {
+        apiKeyGroup.style.display = 'block';
+        if (apiKeyHelp) {
+          if (provider === 'openai') {
+            apiKeyHelp.textContent = 'Your OpenAI API key (starts with sk-)';
+          } else {
+            apiKeyHelp.textContent = 'API key for your custom OpenAI-compatible service';
+          }
+        }
+      }
+    }
+    
+    // Fetch models for the selected provider
+    fetchProviderModels();
   }
 }
 
-async function fetchOllamaModels() {
-  if (!modelSelect || !modelStatus) return;
+async function fetchProviderModels() {
+  if (!modelSelect || !modelStatus || !providerSelect) return;
+  
+  const provider = providerSelect.value;
+  
+  if (provider === 'transformers') {
+    return; // No models to fetch for transformers
+  }
   
   // Get API URL from input or use default
-  const apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
+  let apiUrl = apiUrlInput?.value?.trim();
+  const apiKey = apiKeyInput?.value?.trim();
   const timeout = parseInt(timeoutInput?.value || '10000', 10);
+  
+  // Set defaults based on provider
+  if (!apiUrl) {
+    if (provider === 'ollama') {
+      apiUrl = 'http://localhost:11434/api/generate';
+    } else if (provider === 'openai') {
+      apiUrl = 'https://api.openai.com/v1';
+    }
+  }
   
   // Show loading state
   modelSelect.innerHTML = '<option value="">Loading models...</option>';
   modelSelect.disabled = true;
   if (modelStatus) {
-    modelStatus.textContent = 'Fetching available models from Ollama...';
+    modelStatus.textContent = `Fetching available models from ${provider}...`;
     modelStatus.style.color = '#666';
   }
   
   try {
-    const response = await new Promise<{ success: boolean; models?: string[]; error?: string }>((resolve) => {
+    const response = await new Promise<{ success: boolean; models?: Array<{name: string, label: string}>; error?: string }>((resolve) => {
       chrome.runtime.sendMessage(
         {
-          type: 'OLLAMA_LIST_MODELS',
+          type: 'LIST_MODELS',
+          provider: provider,
           apiUrl: apiUrl,
+          apiKey: apiKey,
           timeout: timeout
         },
         (response) => {
@@ -232,8 +288,8 @@ async function fetchOllamaModels() {
       modelSelect.innerHTML = '<option value="">Select a model...</option>';
       response.models.forEach((model) => {
         const option = document.createElement('option');
-        option.value = model;
-        option.textContent = model;
+        option.value = model.name;
+        option.textContent = model.label || model.name;
         modelSelect.appendChild(option);
       });
       
@@ -245,24 +301,28 @@ async function fetchOllamaModels() {
       
       // If we have a saved model, select it
       const savedConfig = await getLLMConfigFn();
-      if (savedConfig && savedConfig.model && response.models.includes(savedConfig.model)) {
-        modelSelect.value = savedConfig.model;
+      if (savedConfig && savedConfig.model) {
+        const matchingModel = response.models.find(m => m.name === savedConfig.model);
+        if (matchingModel) {
+          modelSelect.value = savedConfig.model;
+        }
       }
     } else {
       modelSelect.innerHTML = '<option value="">No models found</option>';
       modelSelect.disabled = false;
       if (modelStatus) {
-        modelStatus.textContent = response.error || 'No models available. Make sure Ollama is running and has models installed.';
+        const errorMsg = response.error || `No models available. Make sure ${provider} is configured correctly.`;
+        modelStatus.textContent = errorMsg;
         modelStatus.style.color = '#f44336';
       }
     }
   } catch (error) {
-    console.error('[Settings] Failed to fetch Ollama models:', error);
+    console.error('[Settings] Failed to fetch models:', error);
     modelSelect.innerHTML = '<option value="">Error loading models</option>';
     modelSelect.disabled = false;
     if (modelStatus) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      modelStatus.textContent = `Error: ${errorMessage}. Make sure Ollama is running.`;
+      modelStatus.textContent = `Error: ${errorMessage}. Check your configuration.`;
       modelStatus.style.color = '#f44336';
     }
   }
@@ -270,35 +330,49 @@ async function fetchOllamaModels() {
 
 async function saveSettings() {
   try {
-    const useCustomLLM = useCustomLLMCheckbox?.checked || false;
+    const provider = providerSelect?.value || 'transformers';
     
     let config: any;
     
-    if (useCustomLLM) {
-      // Ollama configuration
-      const model = modelSelect?.value?.trim();
-      const apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
-      const timeout = parseInt(timeoutInput?.value || '30000', 10);
-      
-      if (!model) {
-        alert('Please select an Ollama model from the dropdown');
-        return;
-      }
-      
-      config = {
-        enabled: true,
-        provider: 'ollama',
-        model: model,
-        apiUrl: apiUrl,
-        timeout: timeout
-      };
-    } else {
-      // Default: Transformers.js - clear any custom config
+    if (provider === 'transformers') {
+      // Default: Transformers.js
       config = {
         enabled: true,
         provider: 'transformers',
         model: 'Xenova/LaMini-Flan-T5-783M' // Default transformer model
       };
+    } else {
+      // Other providers require model selection
+      const model = modelSelect?.value?.trim();
+      if (!model) {
+        alert(`Please select a model from the dropdown for ${provider}`);
+        return;
+      }
+      
+      config = {
+        enabled: true,
+        provider: provider,
+        model: model,
+        timeout: parseInt(timeoutInput?.value || '30000', 10)
+      };
+      
+      // Add API URL for providers that need it
+      if (provider === 'ollama') {
+        config.apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
+      } else if (provider === 'openai' || provider === 'custom') {
+        const apiUrl = apiUrlInput?.value?.trim();
+        if (apiUrl) {
+          config.apiUrl = apiUrl;
+        }
+        
+        // API key is required for OpenAI and custom
+        const apiKey = apiKeyInput?.value?.trim();
+        if (!apiKey) {
+          alert(`API key is required for ${provider}`);
+          return;
+        }
+        config.apiKey = apiKey;
+      }
     }
     
     await configureLLMExtractionFn(config);
@@ -413,11 +487,16 @@ const settingsModal = document.getElementById('settings-modal') as HTMLDivElemen
 const settingsClose = document.getElementById('settings-close') as HTMLButtonElement;
 const settingsCancel = document.getElementById('settings-cancel') as HTMLButtonElement;
 const settingsForm = document.getElementById('settings-form') as HTMLFormElement;
-const useCustomLLMCheckbox = document.getElementById('use-custom-llm') as HTMLInputElement;
-const ollamaConfigGroup = document.getElementById('ollama-config-group') as HTMLDivElement;
+const providerSelect = document.getElementById('provider') as HTMLSelectElement;
+const providerConfigGroup = document.getElementById('provider-config-group') as HTMLDivElement;
+const apiUrlGroup = document.getElementById('api-url-group') as HTMLDivElement;
+const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
+const apiUrlHelp = document.getElementById('api-url-help') as HTMLElement;
+const apiKeyGroup = document.getElementById('api-key-group') as HTMLDivElement;
+const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
+const apiKeyHelp = document.getElementById('api-key-help') as HTMLElement;
 const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const modelStatus = document.getElementById('model-status') as HTMLElement;
-const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
 
 // State
@@ -533,18 +612,26 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Custom LLM checkbox handler
-  if (useCustomLLMCheckbox) {
-    useCustomLLMCheckbox.addEventListener('change', () => {
-      updateOllamaConfigVisibility();
+  // Provider selection handler
+  if (providerSelect) {
+    providerSelect.addEventListener('change', () => {
+      updateProviderConfigVisibility();
     });
   }
   
-  // Re-fetch models when API URL changes
+  // Re-fetch models when API URL or API key changes
   if (apiUrlInput) {
     apiUrlInput.addEventListener('blur', () => {
-      if (useCustomLLMCheckbox?.checked) {
-        fetchOllamaModels();
+      if (providerSelect?.value !== 'transformers') {
+        fetchProviderModels();
+      }
+    });
+  }
+  
+  if (apiKeyInput) {
+    apiKeyInput.addEventListener('blur', () => {
+      if (providerSelect?.value === 'openai' || providerSelect?.value === 'custom') {
+        fetchProviderModels();
       }
     });
   }

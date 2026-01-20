@@ -91,8 +91,15 @@ export class DomChunker {
     if (visibleHeadings.length > 0) {
       // PRIMARY: Heading-based chunking
       const headingTree = buildHeadingHierarchy(visibleHeadings);
-      chunks.push(...this.createChunksFromHeadingTree(headingTree, mainContent));
-      logger.log(`[DomChunker] Created ${chunks.length} chunks from heading tree`);
+      const headingChunks = this.createChunksFromHeadingTree(headingTree, mainContent);
+      chunks.push(...headingChunks);
+      logger.log(`[DomChunker] Created ${headingChunks.length} chunks from heading tree`);
+      
+      // ALSO: Create chunks for content sections that don't have headings
+      // This ensures we capture content that's not under any heading
+      const contentChunks = this.createChunksFromNonHeadingContent(mainContent, visibleHeadings);
+      chunks.push(...contentChunks);
+      logger.log(`[DomChunker] Created ${contentChunks.length} additional chunks from non-heading content`);
     } else {
       // FALLBACK: Use semantic tags
       logger.log('[DomChunker] No visible headings, using semantic tags fallback');
@@ -193,7 +200,11 @@ export class DomChunker {
       const nextHeading = findNextHeading(node.element, mainContent);
       const content = this.extractContentUnderHeading(node.element, nextHeading);
 
-      if (content.trim()) {
+      // Only create chunk if there's substantial content (not just heading text)
+      // Minimum content length to avoid creating chunks with only heading text
+      const minContentLength = 30; // Minimum characters of actual content (excluding heading)
+      
+      if (content.trim() && content.trim().length >= minContentLength) {
         // Extract content element for markdown conversion
         const contentElement = this.getContentElement(node.element, nextHeading, mainContent);
         const markdown = contentElement ? htmlToMarkdown(contentElement) : content;
@@ -223,6 +234,9 @@ export class DomChunker {
             url: this.url
           }
         });
+      } else if (content.trim().length > 0 && content.trim().length < minContentLength) {
+        // Log when we skip a heading chunk due to insufficient content
+        logger.log(`[DomChunker] Skipping heading chunk "${headingPath.join(' > ')}" - insufficient content (${content.trim().length} chars, need ${minContentLength})`);
       }
 
       // Process children
@@ -344,6 +358,141 @@ export class DomChunker {
     });
     
     return rows.length > 0 ? `Table:\n${rows.join('\n')}` : '';
+  }
+
+  /**
+   * Create chunks from content that doesn't fall under any heading
+   * This captures content sections, paragraphs, and other elements that aren't associated with headings
+   */
+  private createChunksFromNonHeadingContent(
+    mainContent: HTMLElement,
+    headings: HTMLElement[]
+  ): Chunk[] {
+    const chunks: Chunk[] = [];
+    const headingSet = new Set(headings);
+    
+    // Find all substantial content elements (paragraphs, sections, articles, divs with content)
+    const contentSelectors = [
+      'p',
+      'section:not(:has(h1, h2, h3, h4, h5, h6))',
+      'article:not(:has(h1, h2, h3, h4, h5, h6))',
+      'div[class*="content"]:not(:has(h1, h2, h3, h4, h5, h6))',
+      'div[class*="text"]:not(:has(h1, h2, h3, h4, h5, h6))'
+    ];
+    
+    // Get all potential content elements
+    const allElements = Array.from(mainContent.querySelectorAll('*')) as HTMLElement[];
+    const contentElements = allElements.filter(element => {
+      // Skip if not visible
+      if (!isVisible(element)) return false;
+      
+      // Skip if inside iframe
+      if (element.closest('iframe')) return false;
+      
+      // Skip if it's a heading
+      if (headingSet.has(element)) return false;
+      
+      // Skip if it's inside a heading's content area
+      // (content under headings is already captured by heading-based chunking)
+      for (const heading of headings) {
+        const nextHeading = findNextHeading(heading, mainContent);
+        let current = heading.nextElementSibling;
+        while (current && current !== nextHeading) {
+          if (current === element || current.contains(element)) {
+            return false; // This element is already covered by a heading chunk
+          }
+          current = current.nextElementSibling;
+        }
+      }
+      
+      // Check if element has substantial text content
+      const text = extractTextContent(element);
+      if (!text || text.trim().length < 50) return false; // Minimum 50 chars
+      
+      // Prefer semantic elements or elements with substantial content
+      const tagName = element.tagName.toLowerCase();
+      if (tagName === 'p' || tagName === 'section' || tagName === 'article' || 
+          tagName === 'div' || tagName === 'main' || tagName === 'aside') {
+        return true;
+      }
+      
+      return false;
+    });
+    
+    // Group nearby content elements into chunks
+    let currentChunk: HTMLElement[] = [];
+    let chunkIndex = 0;
+    
+    contentElements.forEach((element, index) => {
+      // Check if this element is adjacent to previous elements in the chunk
+      const isAdjacent = currentChunk.length === 0 || 
+        (element.previousElementSibling === currentChunk[currentChunk.length - 1] ||
+         element.previousElementSibling?.contains(currentChunk[currentChunk.length - 1]) ||
+         currentChunk[currentChunk.length - 1].nextElementSibling === element ||
+         currentChunk[currentChunk.length - 1].contains(element.nextElementSibling));
+      
+      if (isAdjacent && currentChunk.length < 5) {
+        // Add to current chunk (max 5 elements per chunk)
+        currentChunk.push(element);
+      } else {
+        // Finalize current chunk and start new one
+        if (currentChunk.length > 0) {
+          const chunkText = currentChunk.map(el => extractTextContent(el)).join(' ').trim();
+          if (chunkText.length >= 50) {
+            const container = document.createElement('div');
+            currentChunk.forEach(el => container.appendChild(el.cloneNode(true)));
+            const markdown = htmlToMarkdown(container);
+            
+            chunks.push({
+              id: `content-${chunkIndex++}`,
+              text: removeLinks(chunkText),
+              metadata: {
+                headingPath: [],
+                semanticTag: 'content',
+                headingLevel: 0,
+                contentType: 'mixed',
+                raw_text: removeLinks(chunkText),
+                markdown: markdown,
+                xpath: getXPath(currentChunk[0]),
+                cssSelector: getCssSelector(currentChunk[0]),
+                visible: true,
+                url: this.url
+              }
+            });
+          }
+        }
+        currentChunk = [element];
+      }
+    });
+    
+    // Finalize last chunk
+    if (currentChunk.length > 0) {
+      const chunkText = currentChunk.map(el => extractTextContent(el)).join(' ').trim();
+      if (chunkText.length >= 50) {
+        const container = document.createElement('div');
+        currentChunk.forEach(el => container.appendChild(el.cloneNode(true)));
+        const markdown = htmlToMarkdown(container);
+        
+        chunks.push({
+          id: `content-${chunkIndex++}`,
+          text: removeLinks(chunkText),
+          metadata: {
+            headingPath: [],
+            semanticTag: 'content',
+            headingLevel: 0,
+            contentType: 'mixed',
+            raw_text: removeLinks(chunkText),
+            markdown: markdown,
+            xpath: getXPath(currentChunk[0]),
+            cssSelector: getCssSelector(currentChunk[0]),
+            visible: true,
+            url: this.url
+          }
+        });
+      }
+    }
+    
+    return chunks;
   }
 
   /**

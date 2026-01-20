@@ -788,36 +788,50 @@
       
       <div class="settings-info">
         <strong>ℹ️ Default: Transformers.js</strong>
-        The extension uses Transformers.js (local model) by default. Configure Ollama below only if you want to use a custom LLM.
+        The extension uses Transformers.js (local model) by default. Select a provider below to use a different LLM.
       </div>
       
       <form class="settings-form" id="settings-form">
         <div class="form-group">
-          <label>
-            <input type="checkbox" id="use-custom-llm" name="useCustomLLM" />
-            Use custom LLM (Ollama)
-          </label>
-          <small>Enable this to configure Ollama instead of using the default Transformers.js</small>
+          <label for="provider">LLM Provider</label>
+          <select id="provider" name="provider">
+            <option value="transformers">Transformers.js (Local - Default)</option>
+            <option value="ollama">Ollama (Local)</option>
+            <option value="openai">OpenAI</option>
+            <option value="custom">Custom OpenAI-compatible API</option>
+          </select>
+          <small>Select the LLM provider to use for content extraction and search</small>
         </div>
         
-        <div id="ollama-config-group" style="display: none;">
-          <div class="form-group">
-            <label for="api-url">Ollama API URL</label>
+        <div id="provider-config-group" style="display: none;">
+          <div class="form-group" id="api-url-group">
+            <label for="api-url">API URL</label>
             <input 
               type="text" 
               id="api-url" 
               name="apiUrl" 
               placeholder="http://localhost:11434/api/generate"
             />
-            <small>Ollama API endpoint URL. Change this to refresh the model list.</small>
+            <small id="api-url-help">API endpoint URL. Change this to refresh the model list.</small>
+          </div>
+          
+          <div class="form-group" id="api-key-group" style="display: none;">
+            <label for="api-key">API Key</label>
+            <input 
+              type="password" 
+              id="api-key" 
+              name="apiKey" 
+              placeholder="Enter your API key"
+            />
+            <small id="api-key-help">API key for authentication</small>
           </div>
           
           <div class="form-group">
-            <label for="model">Ollama Model</label>
+            <label for="model">Model</label>
             <select id="model" name="model">
-              <option value="">Loading models...</option>
+              <option value="">Select provider first...</option>
             </select>
-            <small id="model-status">Fetching available models from Ollama...</small>
+            <small id="model-status">Select a provider to load available models</small>
           </div>
           
           <div class="form-group">
