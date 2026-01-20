@@ -849,6 +849,60 @@
         </div>
         
         <div class="form-group" style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px;">
+          <label style="font-weight: 600; margin-bottom: 10px; display: block;">🤖 Agent Mode</label>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+            <input 
+              type="checkbox" 
+              id="agent-mode" 
+              name="agentMode"
+              style="width: auto; margin: 0;"
+            />
+            <label for="agent-mode" style="margin: 0; font-weight: normal;">
+              Enable Agent Mode (Tool Calling)
+            </label>
+          </div>
+          <small style="display: block; margin-bottom: 15px; color: #666;">
+            When enabled, the AI can use tools like web search to answer questions that require current information.
+          </small>
+          
+          <div id="agent-config-group" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
+            <div class="form-group">
+              <label for="max-tool-steps">Max Tool Steps</label>
+              <input 
+                type="number" 
+                id="max-tool-steps" 
+                name="maxToolSteps" 
+                placeholder="3"
+                min="1"
+                max="10"
+              />
+              <small>Maximum number of tool calls per query (default: 3)</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="web-search-provider">Web Search Provider</label>
+              <select id="web-search-provider" name="webSearchProvider">
+                <option value="tavily">Tavily (Recommended)</option>
+                <option value="serper">Serper</option>
+                <option value="google">Google Custom Search</option>
+              </select>
+              <small>Select the search provider for web search tool</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="web-search-api-key">Web Search API Key</label>
+              <input 
+                type="password" 
+                id="web-search-api-key" 
+                name="webSearchApiKey" 
+                placeholder="Enter API key for search provider"
+              />
+              <small>API key required for web search. Get one from <a href="https://tavily.com" target="_blank">Tavily</a>, <a href="https://serper.dev" target="_blank">Serper</a>, or <a href="https://developers.google.com/custom-search" target="_blank">Google</a>.</small>
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-group" style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px;">
           <label style="font-weight: 600; margin-bottom: 10px; display: block;">Data Management</label>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <button type="button" class="btn btn-secondary" id="settings-export" style="flex: 1; min-width: 120px;">

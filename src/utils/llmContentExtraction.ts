@@ -11,13 +11,22 @@ export interface LLMConfig {
   apiUrl?: string; // e.g., "http://localhost:11434/api/generate" for Ollama, "https://api.openai.com/v1" for OpenAI, or custom endpoint
   apiKey?: string; // For remote APIs like OpenAI and custom OpenAI-compatible APIs
   timeout?: number; // Request timeout in ms
+  // Agent mode settings
+  agentMode?: boolean; // Enable agent mode with tool calling
+  maxToolSteps?: number; // Max tool call iterations (default: 3)
+  // Web search tool settings
+  webSearchProvider?: 'tavily' | 'serper' | 'google'; // Search provider choice
+  webSearchApiKey?: string; // API key for search provider
 }
 
 const DEFAULT_CONFIG: LLMConfig = {
   enabled: false,
   provider: 'transformers', // Use local model by default
   model: 'Xenova/LaMini-Flan-T5-783M', // Small, fast instruction model
-  timeout: 120000 // 2 minutes timeout for extraction (handles large pages)
+  timeout: 120000, // 2 minutes timeout for extraction (handles large pages)
+  agentMode: false, // Agent mode disabled by default
+  maxToolSteps: 3, // Max tool call iterations
+  webSearchProvider: 'tavily' // Default search provider
 };
 
 /**

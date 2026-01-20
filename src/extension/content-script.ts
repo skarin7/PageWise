@@ -469,42 +469,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         try {
-          // Build prompt with conversation history if available
-          // Enhanced prompt to encourage detailed, comprehensive answers
-          let prompt = '';
-          
-          // Add conversation history context (last 5-10 messages)
-          // Simplified prompt format optimized for T5/Flan models
-          if (message.conversationHistory && message.conversationHistory.length > 0) {
-            const recentHistory = message.conversationHistory.slice(-10);
-            const historyText = recentHistory
-              .map((msg: { role: string; content: string }) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-              .join('\n');
-            
-            // Simplified prompt for T5 models - more direct and less verbose
-            prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
-
-Previous conversation:
-${historyText}
-
-Question: ${message.query}
-
-Context:
-${context}
-
-Answer:`;
-          } else {
-            // No conversation history - simplified prompt for T5
-            prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
-
-Question: ${message.query}
-
-Context:
-${context}
-
-Answer:`;
-          }
-          
           // Initialize and call LLM
           // Use the same LLM config that's used for content extraction
           const llmConfig = await getLLMConfig().catch(() => null);
@@ -518,7 +482,8 @@ Answer:`;
             model: llmConfig?.model,
             apiUrl: llmConfig?.apiUrl,
             apiKey: llmConfig?.apiKey ? '***' : undefined,
-            timeout: llmConfig?.timeout
+            timeout: llmConfig?.timeout,
+            agentMode: llmConfig?.agentMode
           });
           
           const llmServiceOptions: any = {
@@ -538,60 +503,225 @@ Answer:`;
           const llmService = LocalModelService.getInstance(llmServiceOptions);
           await llmService.init();
           
-          // Log the prompt for debugging
-          logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
-          logger.log('[ContentScript] LLM Prompt (first 500 chars):', prompt.substring(0, 500) + '...');
-          logger.log('[ContentScript] Query:', message.query);
-          logger.log('[ContentScript] Calling LLM with context length:', context.length);
-          
-          // Use streaming for Ollama, non-streaming for others
-          if (provider === 'ollama') {
-            let streamingAnswer = '';
+          // Check if agent mode is enabled
+          if (llmConfig?.agentMode) {
+            logger.log('[ContentScript] Agent mode enabled, using AgentOrchestrator');
             
-            // Send initial streaming message to sidebar via postMessage
-            const sidebarIframe = document.getElementById('rag-sidebar-iframe') as HTMLIFrameElement;
-            if (sidebarIframe && sidebarIframe.contentWindow) {
-              sidebarIframe.contentWindow.postMessage({
-                type: 'STREAMING_START',
-                query: message.query
-              }, '*');
+            // Import agent components
+            const { AgentOrchestrator } = await import('../core/AgentOrchestrator');
+            const { toolRegistry } = await import('../core/AgentTools');
+            const { createWebSearchTool } = await import('../core/tools/webSearchTool');
+            
+            // Register web search tool if configured
+            if (llmConfig.webSearchProvider && llmConfig.webSearchApiKey) {
+              const webSearchTool = createWebSearchTool({
+                provider: llmConfig.webSearchProvider,
+                apiKey: llmConfig.webSearchApiKey
+              });
+              toolRegistry.register(webSearchTool);
+              logger.log('[ContentScript] Web search tool registered');
             }
             
-            answer = await llmService.generate(prompt, {
-              max_new_tokens: 600,
-              temperature: 0.4,
-              top_p: 0.9,
-              onChunk: (chunk: string) => {
-                streamingAnswer += chunk;
-                // Send streaming chunk to sidebar via postMessage
-                if (sidebarIframe && sidebarIframe.contentWindow) {
-                  sidebarIframe.contentWindow.postMessage({
-                    type: 'STREAMING_CHUNK',
-                    chunk: chunk,
-                    accumulated: streamingAnswer
-                  }, '*');
-                }
-              }
+            // Create agent orchestrator
+            const orchestrator = new AgentOrchestrator(llmService, toolRegistry, {
+              maxSteps: llmConfig.maxToolSteps || 3
             });
             
-            // Send streaming complete message
-            if (sidebarIframe && sidebarIframe.contentWindow) {
-              sidebarIframe.contentWindow.postMessage({
-                type: 'STREAMING_COMPLETE',
-                finalAnswer: answer
-              }, '*');
+            // Convert conversation history format
+            const conversationHistory = (message.conversationHistory || []).map((msg: any) => ({
+              role: msg.role === 'user' ? 'user' : 'assistant',
+              content: msg.content
+            }));
+            
+            // Add page context to query if available
+            let agentQuery = message.query;
+            if (context && context.length > 0) {
+              agentQuery = `${message.query}\n\nNote: You also have access to the current page content. If the question is about the current page, use that information. Otherwise, use web search for current information.`;
+            }
+            
+            // Send tool call notifications to sidebar
+            const sidebarIframe = document.getElementById('rag-sidebar-iframe') as HTMLIFrameElement;
+            const sendToolNotification = (toolName: string, status: string) => {
+              if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({
+                  type: 'TOOL_CALL',
+                  tool: toolName,
+                  status: status
+                }, '*');
+              }
+            };
+            
+            // Declare agentResponse outside if/else for logging
+            let agentResponse: any = null;
+            
+            // Run agent with streaming if Ollama
+            if (provider === 'ollama') {
+              let streamingAnswer = '';
+              
+              if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({
+                  type: 'STREAMING_START',
+                  query: message.query
+                }, '*');
+              }
+              
+              agentResponse = await orchestrator.runStreaming(agentQuery, conversationHistory, {
+                maxSteps: llmConfig.maxToolSteps || 3,
+                onToolCall: (toolCall) => {
+                  logger.log('[ContentScript] Tool call detected:', toolCall.name);
+                  sendToolNotification(toolCall.name, 'executing');
+                },
+                onToolResult: (toolCall, result) => {
+                  logger.log('[ContentScript] Tool result:', toolCall.name, result.success ? 'success' : 'failed');
+                  sendToolNotification(toolCall.name, result.success ? 'completed' : 'failed');
+                },
+                onStep: (step, message) => {
+                  logger.log(`[ContentScript] Agent step ${step}: ${message}`);
+                },
+                onChunk: (chunk: string) => {
+                  streamingAnswer += chunk;
+                  if (sidebarIframe && sidebarIframe.contentWindow) {
+                    sidebarIframe.contentWindow.postMessage({
+                      type: 'STREAMING_CHUNK',
+                      chunk: chunk,
+                      accumulated: streamingAnswer
+                    }, '*');
+                  }
+                }
+              });
+              
+              answer = agentResponse.message;
+              
+              if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({
+                  type: 'STREAMING_COMPLETE',
+                  finalAnswer: answer
+                }, '*');
+              }
+            } else {
+              // Non-streaming agent mode
+              agentResponse = await orchestrator.run(agentQuery, conversationHistory, {
+                maxSteps: llmConfig.maxToolSteps || 3,
+                onToolCall: (toolCall) => {
+                  logger.log('[ContentScript] Tool call detected:', toolCall.name);
+                  sendToolNotification(toolCall.name, 'executing');
+                },
+                onToolResult: (toolCall, result) => {
+                  logger.log('[ContentScript] Tool result:', toolCall.name, result.success ? 'success' : 'failed');
+                  sendToolNotification(toolCall.name, result.success ? 'completed' : 'failed');
+                },
+                onStep: (step, message) => {
+                  logger.log(`[ContentScript] Agent step ${step}: ${message}`);
+                }
+              });
+              
+              answer = agentResponse.message;
+            }
+            
+            if (answer) {
+              logger.log('[ContentScript] Agent response generated, length:', answer.length, 'characters');
+            }
+            if (agentResponse) {
+              logger.log('[ContentScript] Agent steps:', agentResponse.steps);
+              if (agentResponse.toolCalls) {
+                logger.log('[ContentScript] Tool calls made:', agentResponse.toolCalls.length);
+              }
             }
           } else {
-            // Non-streaming for transformers
-            answer = await llmService.generate(prompt, {
-              max_new_tokens: 600,
-              temperature: 0.4,
-              top_p: 0.9
-            });
+            // Regular mode (non-agent)
+            logger.log('[ContentScript] Regular mode, using direct LLM call');
+            
+            // Build prompt with conversation history if available
+            // Enhanced prompt to encourage detailed, comprehensive answers
+            let prompt = '';
+            
+            // Add conversation history context (last 5-10 messages)
+            // Simplified prompt format optimized for T5/Flan models
+            if (message.conversationHistory && message.conversationHistory.length > 0) {
+              const recentHistory = message.conversationHistory.slice(-10);
+              const historyText = recentHistory
+                .map((msg: { role: string; content: string }) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+                .join('\n');
+              
+              // Simplified prompt for T5 models - more direct and less verbose
+              prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
+
+Previous conversation:
+${historyText}
+
+Question: ${message.query}
+
+Context:
+${context}
+
+Answer:`;
+            } else {
+              // No conversation history - simplified prompt for T5
+              prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
+
+Question: ${message.query}
+
+Context:
+${context}
+
+Answer:`;
+            }
+            
+            // Log the prompt for debugging
+            logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
+            logger.log('[ContentScript] LLM Prompt (first 500 chars):', prompt.substring(0, 500) + '...');
+            logger.log('[ContentScript] Query:', message.query);
+            logger.log('[ContentScript] Calling LLM with context length:', context.length);
+            
+            // Use streaming for Ollama, non-streaming for others
+            if (provider === 'ollama') {
+              let streamingAnswer = '';
+              
+              // Send initial streaming message to sidebar via postMessage
+              const sidebarIframe = document.getElementById('rag-sidebar-iframe') as HTMLIFrameElement;
+              if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({
+                  type: 'STREAMING_START',
+                  query: message.query
+                }, '*');
+              }
+              
+              answer = await llmService.generate(prompt, {
+                max_new_tokens: 600,
+                temperature: 0.4,
+                top_p: 0.9,
+                onChunk: (chunk: string) => {
+                  streamingAnswer += chunk;
+                  // Send streaming chunk to sidebar via postMessage
+                  if (sidebarIframe && sidebarIframe.contentWindow) {
+                    sidebarIframe.contentWindow.postMessage({
+                      type: 'STREAMING_CHUNK',
+                      chunk: chunk,
+                      accumulated: streamingAnswer
+                    }, '*');
+                  }
+                }
+              });
+              
+              // Send streaming complete message
+              if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({
+                  type: 'STREAMING_COMPLETE',
+                  finalAnswer: answer
+                }, '*');
+              }
+            } else {
+              // Non-streaming for transformers
+              answer = await llmService.generate(prompt, {
+                max_new_tokens: 600,
+                temperature: 0.4,
+                top_p: 0.9
+              });
+            }
+            
+            logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
+            logger.log('[ContentScript] LLM answer:', answer);
           }
-          
-          logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
-          logger.log('[ContentScript] LLM answer:', answer);
         } catch (error) {
           console.error('[ContentScript] LLM generation failed:', error);
           // Continue without answer - will show chunks only

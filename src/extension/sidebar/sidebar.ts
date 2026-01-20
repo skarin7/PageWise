@@ -160,6 +160,25 @@ async function loadSettings() {
       timeoutInput.value = config?.timeout?.toString() || '30000';
     }
     
+    // Set agent mode
+    if (agentModeCheckbox) {
+      agentModeCheckbox.checked = config?.agentMode || false;
+      updateAgentConfigVisibility();
+    }
+    
+    // Set agent config
+    if (maxToolStepsInput) {
+      maxToolStepsInput.value = config?.maxToolSteps?.toString() || '3';
+    }
+    
+    if (webSearchProviderSelect) {
+      webSearchProviderSelect.value = config?.webSearchProvider || 'tavily';
+    }
+    
+    if (webSearchApiKeyInput && config?.webSearchApiKey) {
+      webSearchApiKeyInput.value = config.webSearchApiKey;
+    }
+    
     // Update visibility and fetch models
     updateProviderConfigVisibility();
     
@@ -191,6 +210,12 @@ async function loadSettings() {
     }
     if (timeoutInput) timeoutInput.value = '30000';
     updateProviderConfigVisibility();
+  }
+}
+
+function updateAgentConfigVisibility() {
+  if (agentConfigGroup && agentModeCheckbox) {
+    agentConfigGroup.style.display = agentModeCheckbox.checked ? 'block' : 'none';
   }
 }
 
@@ -401,6 +426,24 @@ async function saveSettings() {
       }
     }
     
+    // Add agent mode settings
+    if (agentModeCheckbox) {
+      config.agentMode = agentModeCheckbox.checked;
+      
+      if (config.agentMode) {
+        config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
+        config.webSearchProvider = webSearchProviderSelect?.value || 'tavily';
+        
+        const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
+        if (webSearchApiKey) {
+          config.webSearchApiKey = webSearchApiKey;
+        } else {
+          // Warn but don't block - user might add API key later
+          console.warn('Agent mode enabled but no web search API key provided');
+        }
+      }
+    }
+    
     await configureLLMExtractionFn(config);
     
     // Show success message
@@ -525,6 +568,11 @@ const apiKeyHelp = document.getElementById('api-key-help') as HTMLElement;
 const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const modelStatus = document.getElementById('model-status') as HTMLElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
+const agentModeCheckbox = document.getElementById('agent-mode') as HTMLInputElement;
+const agentConfigGroup = document.getElementById('agent-config-group') as HTMLDivElement;
+const maxToolStepsInput = document.getElementById('max-tool-steps') as HTMLInputElement;
+const webSearchProviderSelect = document.getElementById('web-search-provider') as HTMLSelectElement;
+const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
 const settingsExportBtn = document.getElementById('settings-export') as HTMLButtonElement;
 const settingsImportBtn = document.getElementById('settings-import') as HTMLButtonElement;
 const settingsImportFile = document.getElementById('settings-import-file') as HTMLInputElement;
@@ -649,6 +697,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
+  // Agent mode checkbox
+  if (agentModeCheckbox) {
+    agentModeCheckbox.addEventListener('change', () => {
+      updateAgentConfigVisibility();
+    });
+  }
+  
+  // Initial visibility update
+  updateAgentConfigVisibility();
+  
   // Re-fetch models when API URL or API key changes
   if (apiUrlInput) {
     apiUrlInput.addEventListener('blur', () => {
@@ -772,7 +830,11 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('message', (event) => {
     // Only accept messages from our extension
     if (event.data && typeof event.data === 'object') {
-      if (event.data.type === 'STREAMING_START') {
+      if (event.data.type === 'TOOL_CALL') {
+        // Handle tool call notification
+        const { tool, status } = event.data;
+        showToolIndicator(tool, status);
+      } else if (event.data.type === 'STREAMING_START') {
         // Reset streaming state
         currentStreamingMessage = null;
         // Keep typing indicator visible
@@ -1026,6 +1088,37 @@ function updateStreamingMessage(chunk: string, accumulated: string): void {
       
       // Auto-scroll to bottom
       scrollToBottom();
+    }
+  }
+}
+
+// Show tool execution indicator
+function showToolIndicator(toolName: string, status: string): void {
+  const toolIcons: Record<string, string> = {
+    'web_search': '🔍',
+    'page_search': '📄',
+    'calculate': '🔢'
+  };
+  
+  const icon = toolIcons[toolName] || '🔧';
+  const statusText: Record<string, string> = {
+    'executing': 'Searching...',
+    'completed': 'Completed',
+    'failed': 'Failed'
+  };
+  
+  const message = `${icon} ${statusText[status] || status}: ${toolName}`;
+  
+  // Add temporary tool indicator message
+  if (status === 'executing') {
+    addMessage('assistant', message);
+    renderConversation();
+  } else if (status === 'completed' || status === 'failed') {
+    // Update the last message if it's a tool indicator
+    const lastMessage = conversationHistory[conversationHistory.length - 1];
+    if (lastMessage && lastMessage.content.includes(toolName)) {
+      lastMessage.content = message;
+      renderConversation();
     }
   }
 }
