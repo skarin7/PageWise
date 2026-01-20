@@ -3,7 +3,7 @@
  */
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('Comet-like RAG extension installed');
+  console.log('PageWise extension installed');
 });
 
 // Handle long-lived connections for streaming

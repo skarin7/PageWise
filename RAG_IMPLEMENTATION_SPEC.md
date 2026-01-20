@@ -889,7 +889,7 @@ The architecture supports adding domain-specific optimizations:
 ### 12.1. Project Structure
 
 ```
-comet-like/
+pagewise/
 ├── src/
 │   ├── core/
 │   │   ├── DomChunker.ts          # Semantic HTML chunking

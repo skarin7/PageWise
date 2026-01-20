@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Comet-like RAG - Chat with Page",
+  "name": "PageWise - Chat with Page",
   "version": "1.0.0",
   "description": "Query any webpage using semantic search powered by client-side RAG",
   "permissions": [

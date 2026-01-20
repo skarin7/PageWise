@@ -1,7 +1,7 @@
 {
-  "name": "comet-like-rag",
+  "name": "pagewise",
   "version": "1.0.0",
-  "description": "Client-side RAG system for browser extension - Chat with any page",
+  "description": "PageWise - Client-side RAG system for browser extension - Chat with any page",
   "main": "dist/index.js",
   "scripts": {
     "clean": "rm -rf dist",

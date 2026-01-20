@@ -1,4 +1,4 @@
-# Comet-like RAG - Chat with Any Page
+# PageWise - Chat with Any Page
 
 A client-side RAG (Retrieval-Augmented Generation) system that enables you to query any webpage using semantic search. Works as a browser extension or standalone script.
 
@@ -13,7 +13,7 @@ A client-side RAG (Retrieval-Augmented Generation) system that enables you to qu
 ## Project Structure
 
 ```
-comet-like/
+pagewise/
 ├── src/
 │   ├── core/           # Core RAG components
 │   ├── utils/          # Utility functions
