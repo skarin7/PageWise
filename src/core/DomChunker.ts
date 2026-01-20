@@ -153,8 +153,11 @@ export class DomChunker {
     }
 
     // Try LLM-based extraction if enabled
+    // Use the same config that's used for search/RAG
     const config = this.llmConfig || await getLLMConfig();
-    if (config.enabled) {
+    // If config exists and has a provider, use it (enabled flag is checked inside findMainContentByLLM)
+    // This ensures the same config is used for both extraction and search/RAG
+    if (config && (config.enabled || config.provider)) {
       try {
         const llmResult = await findMainContentByLLM(root.ownerDocument || document, config);
         if (llmResult) {

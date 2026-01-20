@@ -492,10 +492,17 @@ export async function getLLMConfig(): Promise<LLMConfig> {
  * Save LLM config to storage
  */
 export async function saveLLMConfig(config: LLMConfig): Promise<void> {
+  // Ensure enabled is true when config is explicitly set (so it's used for both extraction and search/RAG)
+  const configToSave: LLMConfig = {
+    ...config,
+    enabled: config.enabled !== undefined ? config.enabled : true
+  };
+  
   // Save to Chrome storage
   if (typeof chrome !== 'undefined' && chrome.storage) {
     try {
-      await chrome.storage.sync.set({ llmConfig: config });
+      await chrome.storage.sync.set({ llmConfig: configToSave });
+      console.log('[LLMContentExtraction] Config saved to Chrome storage:', configToSave);
     } catch (error) {
       console.warn('[LLMContentExtraction] Could not save config to storage:', error);
     }
@@ -504,7 +511,8 @@ export async function saveLLMConfig(config: LLMConfig): Promise<void> {
   // Also save to localStorage as fallback
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
-      localStorage.setItem('llmConfig', JSON.stringify(config));
+      localStorage.setItem('llmConfig', JSON.stringify(configToSave));
+      console.log('[LLMContentExtraction] Config saved to localStorage:', configToSave);
     } catch (error) {
       console.warn('[LLMContentExtraction] Could not save config to localStorage:', error);
     }

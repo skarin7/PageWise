@@ -383,6 +383,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     
+    // Get sender tab ID for streaming updates
+    const senderTabId = sender.tab?.id;
+    
     rag.search(message.query, message.options)
       .then(async results => {
         logger.log('[ContentScript] Search returned results:', results.length);
@@ -504,8 +507,20 @@ Answer:`;
           }
           
           // Initialize and call LLM
+          // Use the same LLM config that's used for content extraction
           const llmConfig = await getLLMConfig().catch(() => null);
+          
+          // Use the configured provider, or default to transformers
+          // This ensures the same config is used for both extraction and search/RAG
           const provider = llmConfig?.provider === 'ollama' ? 'ollama' : 'transformers';
+          
+          logger.log('[ContentScript] Using LLM config for search/RAG:', {
+            provider,
+            model: llmConfig?.model,
+            apiUrl: llmConfig?.apiUrl,
+            timeout: llmConfig?.timeout
+          });
+          
           const llmService = LocalModelService.getInstance({
             provider,
             modelName: llmConfig?.model,
@@ -520,11 +535,51 @@ Answer:`;
           logger.log('[ContentScript] Query:', message.query);
           logger.log('[ContentScript] Calling LLM with context length:', context.length);
           
-          answer = await llmService.generate(prompt, {
-            max_new_tokens: 600, // Increased from 300 to 600 for longer responses
-            temperature: 0.4, // Slightly increased for more natural responses
-            top_p: 0.9
-          });
+          // Use streaming for Ollama, non-streaming for transformers
+          if (provider === 'ollama') {
+            let streamingAnswer = '';
+            
+            // Send initial streaming message to sidebar via postMessage
+            const sidebarIframe = document.getElementById('rag-sidebar-iframe') as HTMLIFrameElement;
+            if (sidebarIframe && sidebarIframe.contentWindow) {
+              sidebarIframe.contentWindow.postMessage({
+                type: 'STREAMING_START',
+                query: message.query
+              }, '*');
+            }
+            
+            answer = await llmService.generate(prompt, {
+              max_new_tokens: 600,
+              temperature: 0.4,
+              top_p: 0.9,
+              onChunk: (chunk: string) => {
+                streamingAnswer += chunk;
+                // Send streaming chunk to sidebar via postMessage
+                if (sidebarIframe && sidebarIframe.contentWindow) {
+                  sidebarIframe.contentWindow.postMessage({
+                    type: 'STREAMING_CHUNK',
+                    chunk: chunk,
+                    accumulated: streamingAnswer
+                  }, '*');
+                }
+              }
+            });
+            
+            // Send streaming complete message
+            if (sidebarIframe && sidebarIframe.contentWindow) {
+              sidebarIframe.contentWindow.postMessage({
+                type: 'STREAMING_COMPLETE',
+                finalAnswer: answer
+              }, '*');
+            }
+          } else {
+            // Non-streaming for transformers
+            answer = await llmService.generate(prompt, {
+              max_new_tokens: 600,
+              temperature: 0.4,
+              top_p: 0.9
+            });
+          }
           
           logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
           logger.log('[ContentScript] LLM answer:', answer);
@@ -1023,4 +1078,49 @@ function scrollAndHighlight(element: HTMLElement): void {
   
   logger.log('[ContentScript] ✅ Navigated to chunk element:', element.tagName, element.id, element.className);
 }
+
+// Export LLM config helpers to window for console access
+// This makes configureLLMExtraction available in the main page console
+(async () => {
+  try {
+    const { saveLLMConfig, getLLMConfig } = await import('../utils/llmContentExtraction');
+    
+    (window as any).configureLLMExtraction = async (config: any) => {
+      try {
+        await saveLLMConfig(config);
+        console.log('✅ LLM config saved. Reload page to apply.');
+        console.log('Config:', config);
+        return config;
+      } catch (error) {
+        console.error('Failed to save LLM config:', error);
+        // Fallback: save directly to localStorage
+        localStorage.setItem('llmConfig', JSON.stringify(config));
+        console.log('✅ Config saved to localStorage as fallback. Reload page to apply.');
+        return config;
+      }
+    };
+    
+    (window as any).getLLMConfig = async () => {
+      try {
+        return await getLLMConfig();
+      } catch (error) {
+        console.error('Failed to get LLM config:', error);
+        // Fallback: get from localStorage
+        const stored = localStorage.getItem('llmConfig');
+        if (stored) {
+          return JSON.parse(stored);
+        }
+        return null;
+      }
+    };
+    
+    console.log('%c💡 LLM Config Helpers Available', 'color: #667eea; font-weight: bold; font-size: 14px;');
+    console.log('  - configureLLMExtraction(config) - Configure LLM settings');
+    console.log('  - getLLMConfig() - Get current LLM config');
+    console.log('');
+    console.log('Example: await configureLLMExtraction({ provider: "ollama", model: "qwen3:8b", apiUrl: "http://localhost:11434/api/generate" })');
+  } catch (error) {
+    console.error('Failed to load LLM config helpers:', error);
+  }
+})();
 

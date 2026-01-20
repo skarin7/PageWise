@@ -6,6 +6,21 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log('Comet-like RAG extension installed');
 });
 
+// Handle long-lived connections for streaming
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'ollama-stream') {
+    port.onMessage.addListener((message) => {
+      if (message.type === 'OLLAMA_STREAM_START') {
+        handleOllamaStreamConnection(message.url, message.body, message.timeout, port);
+      }
+    });
+    
+    port.onDisconnect.addListener(() => {
+      console.log('[Background] Ollama stream port disconnected');
+    });
+  }
+});
+
 // Handle messages from content script or popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Forward messages between content script and popup
@@ -40,9 +55,107 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
   
+  // Handle streaming connection
+  if (message.type === 'OLLAMA_STREAM_START') {
+    const port = (sender as any).port || null;
+    if (port) {
+      handleOllamaStreamConnection(message.url, message.body, message.timeout, port);
+    }
+    return true;
+  }
+  
+  // List Ollama models
+  if (message.type === 'OLLAMA_LIST_MODELS') {
+    const { apiUrl, timeout } = message;
+    const listUrl = apiUrl ? apiUrl.replace('/api/generate', '/api/tags') : 'http://localhost:11434/api/tags';
+    
+    const controller = new AbortController();
+    const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+    
+    fetch(listUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      signal: controller.signal
+    })
+    .then(async (response) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        sendResponse({ 
+          success: false, 
+          error: `Failed to list models: ${response.status} ${errorText}` 
+        });
+        return;
+      }
+      
+      const data = await response.json();
+      const models = data.models?.map((m: any) => m.name) || [];
+      console.log('[Background] Ollama models fetched:', models);
+      sendResponse({ success: true, models });
+    })
+    .catch(async (error) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      
+      // Try XMLHttpRequest as fallback
+      console.log('[Background] Fetch failed, trying XMLHttpRequest for model list...');
+      try {
+        const models = await new Promise<string[]>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', listUrl, true);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.timeout = timeout || 10000;
+          
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                const models = data.models?.map((m: any) => m.name) || [];
+                resolve(models);
+              } catch (e) {
+                const errorMessage = e instanceof Error ? e.message : String(e);
+                reject(new Error('Failed to parse response: ' + errorMessage));
+              }
+            } else {
+              reject(new Error(`Ollama API error: ${xhr.status} ${xhr.statusText}`));
+            }
+          };
+          
+          xhr.onerror = () => {
+            reject(new Error('Network error: Failed to connect to Ollama'));
+          };
+          
+          xhr.ontimeout = () => {
+            reject(new Error('Request timeout'));
+          };
+          
+          xhr.send();
+        });
+        
+        console.log('[Background] Ollama models fetched via XHR:', models);
+        sendResponse({ success: true, models });
+      } catch (xhrError) {
+        console.error('[Background] Failed to list Ollama models:', xhrError);
+        sendResponse({ 
+          success: false, 
+          error: xhrError instanceof Error ? xhrError.message : 'Failed to list models' 
+        });
+      }
+    });
+    
+    return true; // Keep channel open for async response
+  }
+  
   // Proxy Ollama API requests to avoid CORS issues
   if (message.type === 'OLLAMA_REQUEST') {
-    const { url, body, timeout } = message;
+    const { url, body, timeout, stream } = message;
+    
+    // Handle streaming requests (legacy, use OLLAMA_STREAM_START instead)
+    if (stream) {
+      return handleOllamaStream(url, body, timeout, sendResponse);
+    }
     
     // Use XMLHttpRequest as fallback if fetch is blocked by CSP
     const makeRequest = () => {
@@ -211,6 +324,189 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 });
+
+// Handle streaming Ollama requests via long-lived connection
+async function handleOllamaStreamConnection(
+  url: string,
+  body: any,
+  timeout: number | undefined,
+  port: chrome.runtime.Port
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+  
+  try {
+    const streamBody = { ...body, stream: true };
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(streamBody),
+      signal: controller.signal
+    });
+    
+    if (timeoutId) clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      port.postMessage({ 
+        success: false, 
+        error: `Ollama API error: ${response.status} ${errorText}` 
+      });
+      port.disconnect();
+      return;
+    }
+    
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    
+    if (!reader) {
+      port.postMessage({ success: false, error: 'Stream not available' });
+      port.disconnect();
+      return;
+    }
+    
+    let buffer = '';
+    let fullResponse = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        port.postMessage({ success: true, chunk: '', done: true, fullResponse });
+        port.disconnect();
+        break;
+      }
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+            if (data.response) {
+              fullResponse += data.response;
+              port.postMessage({ 
+                success: true, 
+                chunk: data.response,
+                done: data.done || false
+              });
+            }
+          } catch (e) {
+            // Skip invalid JSON lines
+          }
+        }
+      }
+    }
+  } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
+    console.error('[Background] Ollama stream error:', error);
+    port.postMessage({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Stream failed' 
+    });
+    port.disconnect();
+  }
+}
+
+// Handle streaming Ollama requests (legacy callback-based)
+async function handleOllamaStream(
+  url: string,
+  body: any,
+  timeout: number | undefined,
+  sendResponse: (response: any) => void
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+  
+  try {
+    // Set stream to true for streaming response
+    const streamBody = { ...body, stream: true };
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(streamBody),
+      signal: controller.signal
+    });
+    
+    if (timeoutId) clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      sendResponse({ 
+        success: false, 
+        error: `Ollama API error: ${response.status} ${errorText}` 
+      });
+      return true;
+    }
+    
+    // Handle streaming response
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    
+    if (!reader) {
+      sendResponse({ success: false, error: 'Stream not available' });
+      return true;
+    }
+    
+    let buffer = '';
+    let fullResponse = '';
+    
+    // Send initial response to indicate streaming started
+    sendResponse({ success: true, streaming: true, chunk: '' });
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        // Send final chunk
+        sendResponse({ success: true, streaming: true, chunk: '', done: true, fullResponse });
+        break;
+      }
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const data = JSON.parse(line);
+            if (data.response) {
+              fullResponse += data.response;
+              // Send each chunk
+              sendResponse({ 
+                success: true, 
+                streaming: true, 
+                chunk: data.response,
+                done: data.done || false
+              });
+            }
+          } catch (e) {
+            // Skip invalid JSON lines
+          }
+        }
+      }
+    }
+    
+    return true; // Keep channel open for streaming
+  } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
+    console.error('[Background] Ollama stream error:', error);
+    sendResponse({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Stream failed' 
+    });
+    return true;
+  }
+}
 
 // Handle keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {

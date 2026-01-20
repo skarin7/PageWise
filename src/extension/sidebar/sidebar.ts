@@ -127,20 +127,10 @@ async function loadSettings() {
     const config = await getLLMConfigFn();
     console.log('[Settings] Loaded config:', config);
     
-    if (config && typeof config === 'object') {
-      // Populate form fields with existing config
-      if (providerSelect) {
-        providerSelect.value = config.provider || 'transformers';
-        console.log('[Settings] Set provider to:', providerSelect.value);
-      }
-      
-      if (modelInput) {
-        // Use the model from config, or default based on provider
-        const defaultModel = config.provider === 'ollama' 
-          ? 'llama3' 
-          : 'Xenova/LaMini-Flan-T5-783M';
-        modelInput.value = config.model || defaultModel;
-        console.log('[Settings] Set model to:', modelInput.value);
+    if (config && typeof config === 'object' && config.provider === 'ollama') {
+      // Ollama is configured
+      if (useCustomLLMCheckbox) {
+        useCustomLLMCheckbox.checked = true;
       }
       
       if (apiUrlInput) {
@@ -152,66 +142,165 @@ async function loadSettings() {
         timeoutInput.value = config.timeout?.toString() || '30000';
         console.log('[Settings] Set timeout to:', timeoutInput.value);
       }
+      
+      // Update visibility first, then fetch models
+      updateOllamaConfigVisibility();
+      
+      // Wait a bit for the dropdown to be populated, then set the saved model
+      setTimeout(() => {
+        if (modelSelect && config.model) {
+          modelSelect.value = config.model;
+          console.log('[Settings] Set model to:', config.model);
+        }
+      }, 1000);
     } else {
-      // No config found, set defaults
-      console.log('[Settings] No existing config found, using defaults');
-      if (providerSelect) {
-        providerSelect.value = 'transformers';
+      // Default: Transformers.js (no custom LLM)
+      if (useCustomLLMCheckbox) {
+        useCustomLLMCheckbox.checked = false;
       }
-      if (modelInput) {
-        modelInput.value = 'Xenova/LaMini-Flan-T5-783M';
-      }
+      
+      // Set defaults for Ollama fields (in case user enables it)
       if (apiUrlInput) {
         apiUrlInput.value = 'http://localhost:11434/api/generate';
       }
       if (timeoutInput) {
         timeoutInput.value = '30000';
       }
+      
+      // Update visibility
+      updateOllamaConfigVisibility();
     }
     
-    // Update provider-specific fields visibility
-    updateProviderFields();
     console.log('[Settings] Settings loaded successfully');
   } catch (error) {
     console.error('[Settings] Failed to load settings:', error);
     // Set defaults on error
-    if (providerSelect) providerSelect.value = 'transformers';
-    if (modelInput) modelInput.value = 'Xenova/LaMini-Flan-T5-783M';
+    if (useCustomLLMCheckbox) useCustomLLMCheckbox.checked = false;
     if (apiUrlInput) apiUrlInput.value = 'http://localhost:11434/api/generate';
     if (timeoutInput) timeoutInput.value = '30000';
-    updateProviderFields();
+    updateOllamaConfigVisibility();
   }
 }
 
-function updateProviderFields() {
-  if (providerSelect && apiUrlGroup) {
-    const provider = providerSelect.value;
-    if (provider === 'ollama') {
-      apiUrlGroup.style.display = 'flex';
+function updateOllamaConfigVisibility() {
+  if (useCustomLLMCheckbox && ollamaConfigGroup) {
+    if (useCustomLLMCheckbox.checked) {
+      ollamaConfigGroup.style.display = 'block';
+      // Fetch models when checkbox is checked
+      fetchOllamaModels();
     } else {
-      apiUrlGroup.style.display = 'none';
+      ollamaConfigGroup.style.display = 'none';
+    }
+  }
+}
+
+async function fetchOllamaModels() {
+  if (!modelSelect || !modelStatus) return;
+  
+  // Get API URL from input or use default
+  const apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
+  const timeout = parseInt(timeoutInput?.value || '10000', 10);
+  
+  // Show loading state
+  modelSelect.innerHTML = '<option value="">Loading models...</option>';
+  modelSelect.disabled = true;
+  if (modelStatus) {
+    modelStatus.textContent = 'Fetching available models from Ollama...';
+    modelStatus.style.color = '#666';
+  }
+  
+  try {
+    const response = await new Promise<{ success: boolean; models?: string[]; error?: string }>((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          type: 'OLLAMA_LIST_MODELS',
+          apiUrl: apiUrl,
+          timeout: timeout
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ success: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(response || { success: false, error: 'No response' });
+          }
+        }
+      );
+    });
+    
+    if (response.success && response.models && response.models.length > 0) {
+      // Populate dropdown with models
+      modelSelect.innerHTML = '<option value="">Select a model...</option>';
+      response.models.forEach((model) => {
+        const option = document.createElement('option');
+        option.value = model;
+        option.textContent = model;
+        modelSelect.appendChild(option);
+      });
+      
+      modelSelect.disabled = false;
+      if (modelStatus) {
+        modelStatus.textContent = `${response.models.length} model(s) available`;
+        modelStatus.style.color = '#4caf50';
+      }
+      
+      // If we have a saved model, select it
+      const savedConfig = await getLLMConfigFn();
+      if (savedConfig && savedConfig.model && response.models.includes(savedConfig.model)) {
+        modelSelect.value = savedConfig.model;
+      }
+    } else {
+      modelSelect.innerHTML = '<option value="">No models found</option>';
+      modelSelect.disabled = false;
+      if (modelStatus) {
+        modelStatus.textContent = response.error || 'No models available. Make sure Ollama is running and has models installed.';
+        modelStatus.style.color = '#f44336';
+      }
+    }
+  } catch (error) {
+    console.error('[Settings] Failed to fetch Ollama models:', error);
+    modelSelect.innerHTML = '<option value="">Error loading models</option>';
+    modelSelect.disabled = false;
+    if (modelStatus) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      modelStatus.textContent = `Error: ${errorMessage}. Make sure Ollama is running.`;
+      modelStatus.style.color = '#f44336';
     }
   }
 }
 
 async function saveSettings() {
   try {
-    const config: any = {
-      enabled: true,
-      provider: providerSelect?.value || 'transformers',
-      model: modelInput?.value || '',
-      timeout: parseInt(timeoutInput?.value || '30000', 10)
-    };
-
-    if (providerSelect?.value === 'ollama') {
-      config.apiUrl = apiUrlInput?.value || 'http://localhost:11434/api/generate';
+    const useCustomLLM = useCustomLLMCheckbox?.checked || false;
+    
+    let config: any;
+    
+    if (useCustomLLM) {
+      // Ollama configuration
+      const model = modelSelect?.value?.trim();
+      const apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
+      const timeout = parseInt(timeoutInput?.value || '30000', 10);
+      
+      if (!model) {
+        alert('Please select an Ollama model from the dropdown');
+        return;
+      }
+      
+      config = {
+        enabled: true,
+        provider: 'ollama',
+        model: model,
+        apiUrl: apiUrl,
+        timeout: timeout
+      };
+    } else {
+      // Default: Transformers.js - clear any custom config
+      config = {
+        enabled: true,
+        provider: 'transformers',
+        model: 'Xenova/LaMini-Flan-T5-783M' // Default transformer model
+      };
     }
-
-    // Only save if model is provided (or use default for transformers)
-    if (!config.model && config.provider === 'transformers') {
-      config.model = 'Xenova/LaMini-Flan-T5-783M';
-    }
-
+    
     await configureLLMExtractionFn(config);
     
     // Show success message
@@ -318,17 +407,17 @@ const statusDiv = document.getElementById('status') as HTMLDivElement;
 const statusText = document.getElementById('status-text') as HTMLSpanElement;
 const statusSpinner = document.getElementById('status-spinner') as HTMLSpanElement;
 const closeBtn = document.getElementById('close-btn') as HTMLButtonElement;
-const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
 // Settings button will be queried inside DOMContentLoaded to ensure it exists
 let settingsBtn: HTMLButtonElement | null = null;
 const settingsModal = document.getElementById('settings-modal') as HTMLDivElement;
 const settingsClose = document.getElementById('settings-close') as HTMLButtonElement;
 const settingsCancel = document.getElementById('settings-cancel') as HTMLButtonElement;
 const settingsForm = document.getElementById('settings-form') as HTMLFormElement;
-const providerSelect = document.getElementById('provider') as HTMLSelectElement;
-const modelInput = document.getElementById('model') as HTMLInputElement;
+const useCustomLLMCheckbox = document.getElementById('use-custom-llm') as HTMLInputElement;
+const ollamaConfigGroup = document.getElementById('ollama-config-group') as HTMLDivElement;
+const modelSelect = document.getElementById('model') as HTMLSelectElement;
+const modelStatus = document.getElementById('model-status') as HTMLElement;
 const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
-const apiUrlGroup = document.getElementById('api-url-group') as HTMLDivElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
 
 // State
@@ -355,25 +444,71 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Clear conversation button
-  if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
-      clearConversation();
-    });
-  }
-
   // Settings button - query inside DOMContentLoaded to ensure it exists
   settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement;
   if (settingsBtn) {
-    settingsBtn.addEventListener('click', (e) => {
+    // Ensure button is enabled and visible
+    settingsBtn.disabled = false;
+    settingsBtn.style.opacity = '1';
+    settingsBtn.style.cursor = 'pointer';
+    settingsBtn.style.pointerEvents = 'auto';
+    settingsBtn.style.zIndex = '1000';
+    settingsBtn.setAttribute('tabindex', '0');
+    
+    // Make the entire button area clickable by wrapping click handler
+    const handleClick = (e: MouseEvent | KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
       console.log('[Settings] Settings button clicked');
       openSettings();
+    };
+    
+    // Add click event listener to the button
+    settingsBtn.addEventListener('click', handleClick);
+    
+    // Also handle mousedown to catch all clicks
+    settingsBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
     });
-    console.log('[Settings] Settings button event listener attached');
+    
+    // Add keyboard support
+    settingsBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        handleClick(e);
+      }
+    });
+    
+    // Make parent container also clickable as fallback
+    const headerActions = settingsBtn.closest('.header-actions');
+    if (headerActions) {
+      headerActions.addEventListener('click', (e) => {
+        if (e.target === settingsBtn || (e.target as HTMLElement).closest('#settings-btn')) {
+          handleClick(e as MouseEvent);
+        }
+      });
+    }
+    
+    console.log('[Settings] Settings button event listener attached', {
+      disabled: settingsBtn.disabled,
+      opacity: settingsBtn.style.opacity,
+      cursor: settingsBtn.style.cursor,
+      pointerEvents: settingsBtn.style.pointerEvents
+    });
   } else {
     console.error('[Settings] Settings button not found in DOM');
+    // Try again after a short delay
+    setTimeout(() => {
+      const retryBtn = document.getElementById('settings-btn') as HTMLButtonElement;
+      if (retryBtn) {
+        console.log('[Settings] Found button on retry');
+        settingsBtn = retryBtn;
+        settingsBtn.disabled = false;
+        settingsBtn.style.opacity = '1';
+        settingsBtn.style.cursor = 'pointer';
+        settingsBtn.addEventListener('click', () => openSettings());
+      }
+    }, 100);
   }
 
   // Settings modal close buttons
@@ -398,10 +533,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Provider change handler
-  if (providerSelect) {
-    providerSelect.addEventListener('change', () => {
-      updateProviderFields();
+  // Custom LLM checkbox handler
+  if (useCustomLLMCheckbox) {
+    useCustomLLMCheckbox.addEventListener('change', () => {
+      updateOllamaConfigVisibility();
+    });
+  }
+  
+  // Re-fetch models when API URL changes
+  if (apiUrlInput) {
+    apiUrlInput.addEventListener('blur', () => {
+      if (useCustomLLMCheckbox?.checked) {
+        fetchOllamaModels();
+      }
     });
   }
 
@@ -435,6 +579,26 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Load settings on page load (to ensure defaults are set)
   loadSettings();
+  
+  // Listen for streaming messages from content script via window.postMessage
+  // (since sidebar is in an iframe)
+  window.addEventListener('message', (event) => {
+    // Only accept messages from our extension
+    if (event.data && typeof event.data === 'object') {
+      if (event.data.type === 'STREAMING_START') {
+        // Reset streaming state
+        currentStreamingMessage = null;
+        // Keep typing indicator visible
+        console.log('[Sidebar] Streaming started');
+      } else if (event.data.type === 'STREAMING_CHUNK') {
+        // Update streaming message
+        updateStreamingMessage(event.data.chunk, event.data.accumulated);
+      } else if (event.data.type === 'STREAMING_COMPLETE') {
+        // Complete streaming - will be handled by the main response handler
+        console.log('[Sidebar] Streaming completed');
+      }
+    }
+  });
 });
 
 // Check if content script is available
@@ -589,19 +753,34 @@ async function handleSearch() {
       }
       
       if (response?.success) {
-        // Add assistant message with answer and sources
-        const answer = response.answer || (response.results.length > 0 
-          ? 'I found some relevant information, but couldn\'t generate a summary. Please check the sources below.' 
-          : 'I couldn\'t find any relevant information on this page.');
-        
-        // Insert citations into answer if available
-        let answerWithCitations = answer;
-        if (response.citations && response.citations.citations.length > 0) {
-          answerWithCitations = insertCitations(answer, response.citations);
+        // Complete streaming if it was active
+        if (currentStreamingMessage) {
+          const answer = response.answer || (response.results.length > 0 
+            ? 'I found some relevant information, but couldn\'t generate a summary. Please check the sources below.' 
+            : 'I couldn\'t find any relevant information on this page.');
+          
+          // Insert citations into answer if available
+          let answerWithCitations = answer;
+          if (response.citations && response.citations.citations.length > 0) {
+            answerWithCitations = insertCitations(answer, response.citations);
+          }
+          
+          completeStreamingMessage(answerWithCitations, response.results || [], response.citations);
+        } else {
+          // Non-streaming response
+          const answer = response.answer || (response.results.length > 0 
+            ? 'I found some relevant information, but couldn\'t generate a summary. Please check the sources below.' 
+            : 'I couldn\'t find any relevant information on this page.');
+          
+          // Insert citations into answer if available
+          let answerWithCitations = answer;
+          if (response.citations && response.citations.citations.length > 0) {
+            answerWithCitations = insertCitations(answer, response.citations);
+          }
+          
+          addMessage('assistant', answerWithCitations, response.results || [], response.citations);
+          renderConversation();
         }
-        
-        addMessage('assistant', answerWithCitations, response.results || [], response.citations);
-        renderConversation();
       } else {
         const errorMsg = response?.error || 'Unknown error';
         addMessage('assistant', `Error: ${errorMsg}`);
@@ -613,6 +792,9 @@ async function handleSearch() {
 }
 
 
+// Streaming state
+let currentStreamingMessage: { element: HTMLElement | null; content: string } | null = null;
+
 // Conversation management functions
 function addMessage(role: 'user' | 'assistant', content: string, sources?: any[], citations?: any): void {
   conversationHistory.push({
@@ -622,6 +804,60 @@ function addMessage(role: 'user' | 'assistant', content: string, sources?: any[]
     sources,
     citations
   });
+}
+
+// Add or update streaming message
+function updateStreamingMessage(chunk: string, accumulated: string): void {
+  // Hide typing indicator if visible
+  hideTypingIndicator();
+  
+  if (!currentStreamingMessage) {
+    // Create new streaming message
+    addMessage('assistant', accumulated);
+    renderConversation();
+    
+    // Find the last assistant message element
+    const messages = messagesContainer.querySelectorAll('.message-assistant');
+    const lastMessage = messages[messages.length - 1] as HTMLElement;
+    
+    if (lastMessage) {
+      const contentElement = lastMessage.querySelector('.message-content') as HTMLElement;
+      if (contentElement) {
+        currentStreamingMessage = {
+          element: contentElement,
+          content: accumulated
+        };
+      }
+    }
+  } else {
+    // Update existing streaming message
+    currentStreamingMessage.content = accumulated;
+    if (currentStreamingMessage.element) {
+      // Update the content with proper formatting
+      const formattedContent = escapeHtml(accumulated).replace(/\n/g, '<br>');
+      currentStreamingMessage.element.innerHTML = formattedContent;
+      
+      // Auto-scroll to bottom
+      scrollToBottom();
+    }
+  }
+}
+
+// Complete streaming message
+function completeStreamingMessage(finalAnswer: string, sources?: any[], citations?: any): void {
+  if (currentStreamingMessage) {
+    // Update the last message in history
+    const lastMessage = conversationHistory[conversationHistory.length - 1];
+    if (lastMessage && lastMessage.role === 'assistant') {
+      lastMessage.content = finalAnswer;
+      lastMessage.sources = sources;
+      lastMessage.citations = citations;
+    }
+    
+    // Re-render to apply citations and formatting
+    renderConversation();
+    currentStreamingMessage = null;
+  }
 }
 
 function clearConversation(): void {

@@ -186,13 +186,22 @@ export class LocalModelService {
 
   /**
    * Generate text using the model
+   * Supports streaming for Ollama provider
    */
-  async generate(prompt: string, options?: {
-    max_new_tokens?: number;
-    temperature?: number;
-    top_p?: number;
-  }): Promise<string> {
+  async generate(
+    prompt: string, 
+    options?: {
+      max_new_tokens?: number;
+      temperature?: number;
+      top_p?: number;
+      onChunk?: (chunk: string) => void; // Streaming callback
+    }
+  ): Promise<string> {
     if (this.provider === 'ollama') {
+      // Use streaming for Ollama if callback is provided
+      if (options?.onChunk) {
+        return this.generateWithOllamaStream(prompt, options);
+      }
       return this.generateWithOllama(prompt, options);
     }
 
@@ -299,7 +308,14 @@ export class LocalModelService {
     max_new_tokens?: number;
     temperature?: number;
     top_p?: number;
+    onChunk?: (chunk: string) => void;
   }): Promise<string> {
+    // If streaming callback is provided, use streaming
+    if (options?.onChunk) {
+      return this.generateWithOllamaStream(prompt, options);
+    }
+    
+    // Otherwise use non-streaming
     return new Promise((resolve, reject) => {
       if (typeof chrome === 'undefined' || !chrome.runtime) {
         reject(new Error('Chrome extension API not available'));
@@ -410,6 +426,95 @@ export class LocalModelService {
    */
   getModelName(): string {
     return this.modelName;
+  }
+
+  /**
+   * Generate text with Ollama using streaming
+   */
+  private async generateWithOllamaStream(
+    prompt: string, 
+    options?: {
+      max_new_tokens?: number;
+      temperature?: number;
+      top_p?: number;
+      onChunk?: (chunk: string) => void;
+    }
+  ): Promise<string> {
+    await this.init();
+
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        reject(new Error('Chrome extension API not available'));
+        return;
+      }
+
+      // Build options object - only include valid Ollama options
+      const ollamaOptions: Record<string, any> = {};
+      if (options?.temperature !== undefined) {
+        ollamaOptions.temperature = options.temperature;
+      }
+      if (options?.max_new_tokens !== undefined) {
+        ollamaOptions.num_predict = options.max_new_tokens;
+      }
+      if (options?.top_p !== undefined) {
+        ollamaOptions.top_p = options.top_p;
+      }
+      
+      // Build request body with streaming enabled
+      const requestBody: Record<string, any> = {
+        model: this.modelName,
+        prompt: prompt,
+        stream: true // Enable streaming
+      };
+      
+      if (Object.keys(ollamaOptions).length > 0) {
+        requestBody.options = ollamaOptions;
+      }
+      
+      let fullResponse = '';
+      
+      // Use long-lived connection for streaming
+      const messagePort = chrome.runtime.connect({ name: 'ollama-stream' });
+      
+      // Send initial request
+      messagePort.postMessage({
+        type: 'OLLAMA_STREAM_START',
+        url: this.ollamaUrl,
+        body: requestBody,
+        timeout: this.requestTimeoutMs
+      });
+      
+      messagePort.onMessage.addListener((response) => {
+        if (response.error) {
+          messagePort.disconnect();
+          reject(new Error(response.error));
+          return;
+        }
+        
+        if (response.chunk) {
+          fullResponse += response.chunk;
+          // Call the streaming callback
+          if (options?.onChunk) {
+            options.onChunk(response.chunk);
+          }
+        }
+        
+        if (response.done) {
+          messagePort.disconnect();
+          resolve(fullResponse.trim());
+        }
+      });
+      
+      messagePort.onDisconnect.addListener(() => {
+        if (fullResponse) {
+          resolve(fullResponse.trim());
+        } else if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          reject(new Error('Stream disconnected'));
+        }
+      });
+    });
   }
 
   /**
