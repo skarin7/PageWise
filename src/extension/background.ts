@@ -11,7 +11,10 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'ollama-stream') {
     port.onMessage.addListener((message) => {
       if (message.type === 'OLLAMA_STREAM_START') {
-        handleOllamaStreamConnection(message.url, message.body, message.timeout, port);
+        handleOllamaStreamConnection(message.url, message.body, message.timeout, port).catch((error) => {
+          console.error('[Background] Error in handleOllamaStreamConnection:', error);
+          // Error handling is done inside handleOllamaStreamConnection
+        });
       }
     });
     
@@ -69,8 +72,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const { provider, apiUrl, apiKey, timeout } = message;
     
     if (provider === 'ollama') {
-      // Handle Ollama model listing
-      const listUrl = apiUrl ? apiUrl.replace('/api/generate', '/api/tags') : 'http://localhost:11434/api/tags';
+      // Handle Ollama model listing - normalize URL to base, then add /api/tags
+      let baseUrl = apiUrl || 'http://localhost:11434';
+      // Remove any endpoint paths
+      baseUrl = baseUrl
+        .replace(/\/api\/generate$/, '')
+        .replace(/\/api\/chat$/, '')
+        .replace(/\/api\/tags$/, '')
+        .replace(/\/generate$/, '')
+        .replace(/\/chat$/, '')
+        .replace(/\/$/, '');
+      const listUrl = `${baseUrl}/api/tags`;
       
       const controller = new AbortController();
       const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
@@ -149,9 +161,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       
       return true; // Keep channel open for async response
-    } else if (provider === 'openai' || provider === 'custom') {
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'custom') {
       // Handle OpenAI-compatible API model listing
-      const baseUrl = apiUrl || 'https://api.openai.com/v1';
+      // Set default base URL based on provider
+      let defaultBaseUrl = 'https://api.openai.com/v1';
+      if (provider === 'openrouter') {
+        defaultBaseUrl = 'https://openrouter.ai/api/v1';
+      }
+      const baseUrl = apiUrl || defaultBaseUrl;
       const listUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
       
       const controller = new AbortController();
@@ -207,7 +224,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Legacy: List Ollama models (for backward compatibility)
   if (message.type === 'OLLAMA_LIST_MODELS') {
     const { apiUrl, timeout } = message;
-    const listUrl = apiUrl ? apiUrl.replace('/api/generate', '/api/tags') : 'http://localhost:11434/api/tags';
+    // Normalize URL to base, then add /api/tags
+    let baseUrl = apiUrl || 'http://localhost:11434';
+    baseUrl = baseUrl
+      .replace(/\/api\/generate$/, '')
+      .replace(/\/api\/chat$/, '')
+      .replace(/\/api\/tags$/, '')
+      .replace(/\/generate$/, '')
+      .replace(/\/chat$/, '')
+      .replace(/\/$/, '');
+    const listUrl = `${baseUrl}/api/tags`;
     
     const controller = new AbortController();
     const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
@@ -595,11 +621,28 @@ async function handleOllamaStreamConnection(
   } catch (error) {
     if (timeoutId) clearTimeout(timeoutId);
     console.error('[Background] Ollama stream error:', error);
-    port.postMessage({ 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Stream failed' 
-    });
-    port.disconnect();
+    const errorMessage = error instanceof Error ? error.message : 'Stream failed';
+    
+    // Try to send error message, but don't fail if port is already disconnected
+    try {
+      if (port) {
+        port.postMessage({ 
+          success: false, 
+          error: errorMessage
+        });
+      }
+    } catch (e) {
+      console.warn('[Background] Could not send error message to port (may be disconnected):', e);
+    }
+    
+    // Disconnect port if still connected
+    try {
+      if (port) {
+        port.disconnect();
+      }
+    } catch (e) {
+      // Port may already be disconnected, ignore
+    }
   }
 }
 

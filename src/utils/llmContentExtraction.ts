@@ -8,30 +8,34 @@
 
 import { LocalModelService } from '../core/LocalModelService';
 import { getPersistentStorage } from './persistentStorage';
+import { createContentExtractionPrompt } from '../prompts';
 
 export interface LLMConfig {
   enabled: boolean;
-  provider?: 'transformers' | 'ollama' | 'openai' | 'custom'; // transformers = local model
+  // Mode selection: offline = local only, online = with web search/tool calling
+  mode?: 'offline' | 'online'; // New field - replaces agentMode conceptually
+  provider?: 'transformers' | 'ollama' | 'openai' | 'openrouter' | 'custom'; // transformers = local model, openrouter = OpenRouter API
   model?: string; // For transformers: "Xenova/LaMini-Flan-T5-783M", for APIs: "llama3.2", "mistral", etc.
-  apiUrl?: string; // e.g., "http://localhost:11434/api/generate" for Ollama, "https://api.openai.com/v1" for OpenAI, or custom endpoint
-  apiKey?: string; // For remote APIs like OpenAI and custom OpenAI-compatible APIs
+  apiUrl?: string; // e.g., "http://localhost:11434" for Ollama, "https://api.openai.com/v1" for OpenAI, or custom endpoint
+  apiKey?: string; // For remote APIs like OpenAI, OpenRouter, and custom OpenAI-compatible APIs
   timeout?: number; // Request timeout in ms
-  // Agent mode settings
-  agentMode?: boolean; // Enable agent mode with tool calling
+  // Agent mode settings (kept for backward compatibility, derived from mode)
+  agentMode?: boolean; // Enable agent mode with tool calling (deprecated: use mode instead)
   maxToolSteps?: number; // Max tool call iterations (default: 3)
   // Web search tool settings
-  webSearchProvider?: 'tavily' | 'serper' | 'google'; // Search provider choice
-  webSearchApiKey?: string; // API key for search provider
+  webSearchProvider?: 'ollama' | 'tavily' | 'serper' | 'google'; // Search provider choice
+  webSearchApiKey?: string; // API key for search provider (Ollama API key for Ollama, or provider-specific key)
 }
 
 const DEFAULT_CONFIG: LLMConfig = {
   enabled: false,
+  mode: 'offline', // Default to offline mode (local only)
   provider: 'transformers', // Use local model by default
   model: 'Xenova/LaMini-Flan-T5-783M', // Small, fast instruction model
   timeout: 120000, // 2 minutes timeout for extraction (handles large pages)
-  agentMode: false, // Agent mode disabled by default
+  agentMode: false, // Agent mode disabled by default (derived from mode: 'offline')
   maxToolSteps: 3, // Max tool call iterations
-  webSearchProvider: 'tavily' // Default search provider
+  webSearchProvider: 'ollama' // Default to Ollama (native integration)
 };
 
 /**
@@ -94,31 +98,7 @@ function extractHTMLStructure(document: Document): string {
   return structure.join('\n');
 }
 
-/**
- * Create prompt for LLM to identify main content
- */
-function createContentExtractionPrompt(htmlStructure: string, url: string): string {
-  return `You are analyzing a web page to identify the main content area. Your task is to determine which HTML element contains the primary article/content (not navigation, footer, header, or ads).
-
-HTML Structure (body children):
-${htmlStructure}
-
-URL: ${url}
-
-Instructions:
-1. Analyze the HTML structure above
-2. Identify the element that contains the main article/content
-3. Return ONLY a CSS selector that uniquely identifies this element
-4. The selector should be specific enough to target the main content container
-5. Prefer semantic selectors (main, article, [role="main"]) if available
-6. If no clear main content, return the selector for the element with the most substantial text content
-
-Return format: Just the CSS selector, nothing else. Example: "main" or "#content" or ".article-content" or "body > div:nth-child(2)"
-
-IMPORTANT: Do NOT select iframes or elements inside iframes. Ignore chatbot widgets, ads, and third-party embeds.
-
-CSS Selector:`;
-}
+// Prompt function is now imported from prompts module
 
 /**
  * Call Transformers.js local model
@@ -161,9 +141,23 @@ async function callTransformersAPI(config: LLMConfig, prompt: string): Promise<s
  * Uses streaming to prevent timeouts on large pages
  */
 async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string> {
-  const apiUrl = config.apiUrl || DEFAULT_CONFIG.apiUrl!;
+  let apiUrl = config.apiUrl || DEFAULT_CONFIG.apiUrl!;
   const model = config.model || DEFAULT_CONFIG.model!;
   const timeout = config.timeout || 120000; // 2 minutes default for extraction
+  
+  // Normalize Ollama URL to ensure it includes /api/generate endpoint
+  // Remove any existing endpoint paths and construct /api/generate
+  let baseUrl = apiUrl
+    .replace(/\/api\/generate$/, '')
+    .replace(/\/api\/chat$/, '')
+    .replace(/\/api\/tags$/, '')
+    .replace(/\/api$/, '')
+    .replace(/\/generate$/, '')
+    .replace(/\/chat$/, '')
+    .replace(/\/$/, '');
+  
+  // Construct full /api/generate path for Ollama API
+  const normalizedUrl = `${baseUrl}/api/generate`;
   
   // Use background script proxy if available (browser extension context)
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.connect) {
@@ -189,10 +183,10 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
         }
       }, timeout);
       
-      // Send initial request
+      // Send initial request with normalized URL
       messagePort.postMessage({
         type: 'OLLAMA_STREAM_START',
-        url: apiUrl,
+        url: normalizedUrl,
         body: requestBody,
         timeout: timeout
       });
@@ -236,7 +230,12 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
       messagePort.onDisconnect.addListener(() => {
         clearTimeout(connectionTimeout);
         if (!hasReceivedData) {
-          reject(new Error('Connection to background script lost'));
+          // Check if there's a last error from Chrome runtime
+          const lastError = chrome.runtime.lastError;
+          const errorMsg = lastError 
+            ? `Connection to background script lost: ${lastError.message}. The extension may have been reloaded or the background script crashed.`
+            : 'Connection to background script lost. The extension may have been reloaded or the background script crashed.';
+          reject(new Error(errorMsg));
         } else if (fullResponse.trim()) {
           // If we have partial response, resolve with what we have
           resolve(fullResponse.trim());
@@ -248,7 +247,7 @@ async function callOllamaAPI(config: LLMConfig, prompt: string): Promise<string>
   }
   
   // Fallback to direct fetch with streaming (for testing outside extension context)
-  const response = await fetch(apiUrl, {
+  const response = await fetch(normalizedUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -543,15 +542,48 @@ export async function findMainContentByLLM(
 }
 
 /**
+ * Migrate config: derive mode from agentMode for backward compatibility
+ */
+function migrateConfig(config: LLMConfig): LLMConfig {
+  // If mode is not set but agentMode is, derive mode from agentMode
+  if (config.mode === undefined && config.agentMode !== undefined) {
+    config.mode = config.agentMode ? 'online' : 'offline';
+    console.log('[LLMContentExtraction] Migrated config: agentMode -> mode', {
+      agentMode: config.agentMode,
+      mode: config.mode
+    });
+  }
+  
+  // Ensure mode and agentMode are consistent
+  if (config.mode !== undefined) {
+    // Derive agentMode from mode if not explicitly set
+    if (config.agentMode === undefined) {
+      config.agentMode = config.mode === 'online';
+    } else {
+      // If both are set, ensure they're consistent (mode takes precedence)
+      const expectedAgentMode = config.mode === 'online';
+      if (config.agentMode !== expectedAgentMode) {
+        console.warn('[LLMContentExtraction] Config inconsistency: mode and agentMode mismatch. Using mode value.');
+        config.agentMode = expectedAgentMode;
+      }
+    }
+  }
+  
+  return config;
+}
+
+/**
  * Get LLM config from storage or environment
  */
 export async function getLLMConfig(): Promise<LLMConfig> {
+  let loadedConfig: LLMConfig | null = null;
+  
   // Try to get from Chrome storage first
   if (typeof chrome !== 'undefined' && chrome.storage) {
     try {
       const result = await chrome.storage.sync.get('llmConfig');
       if (result.llmConfig) {
-        return { ...DEFAULT_CONFIG, ...result.llmConfig };
+        loadedConfig = { ...DEFAULT_CONFIG, ...result.llmConfig };
       }
     } catch (error) {
       console.warn('[LLMContentExtraction] Could not load config from storage:', error);
@@ -559,11 +591,11 @@ export async function getLLMConfig(): Promise<LLMConfig> {
   }
   
   // Try to get from localStorage
-  if (typeof window !== 'undefined' && window.localStorage) {
+  if (!loadedConfig && typeof window !== 'undefined' && window.localStorage) {
     try {
       const stored = localStorage.getItem('llmConfig');
       if (stored) {
-        return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+        loadedConfig = { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
       }
     } catch (error) {
       console.warn('[LLMContentExtraction] Could not load config from localStorage:', error);
@@ -571,19 +603,23 @@ export async function getLLMConfig(): Promise<LLMConfig> {
   }
   
   // Try persistent storage as fallback (for settings that survive uninstall)
-  try {
-    const storage = getPersistentStorage();
-    const persistentPrefs = await storage.loadPreferences();
-    if (persistentPrefs?.llmConfig) {
-      console.log('[LLMContentExtraction] Loaded config from persistent storage');
-      return { ...DEFAULT_CONFIG, ...persistentPrefs.llmConfig };
+  if (!loadedConfig) {
+    try {
+      const storage = getPersistentStorage();
+      const persistentPrefs = await storage.loadPreferences();
+      if (persistentPrefs?.llmConfig) {
+        console.log('[LLMContentExtraction] Loaded config from persistent storage');
+        loadedConfig = { ...DEFAULT_CONFIG, ...persistentPrefs.llmConfig };
+      }
+    } catch (error) {
+      // Persistent storage not available or no data - that's OK, use default
+      console.debug('[LLMContentExtraction] Persistent storage not available or empty:', error);
     }
-  } catch (error) {
-    // Persistent storage not available or no data - that's OK, use default
-    console.debug('[LLMContentExtraction] Persistent storage not available or empty:', error);
   }
   
-  return DEFAULT_CONFIG;
+  // Migrate config if needed and return
+  const config = loadedConfig || DEFAULT_CONFIG;
+  return migrateConfig(config);
 }
 
 /**
@@ -592,10 +628,18 @@ export async function getLLMConfig(): Promise<LLMConfig> {
  * @param persistAfterUninstall - If true, also save to persistent storage that survives uninstall
  */
 export async function saveLLMConfig(config: LLMConfig, persistAfterUninstall: boolean = false): Promise<void> {
+  // Ensure mode and agentMode are consistent before saving
+  const migratedConfig = migrateConfig({ ...config });
+  
+  // If mode is set, ensure agentMode matches
+  if (migratedConfig.mode !== undefined) {
+    migratedConfig.agentMode = migratedConfig.mode === 'online';
+  }
+  
   // Ensure enabled is true when config is explicitly set (so it's used for both extraction and search/RAG)
   const configToSave: LLMConfig = {
-    ...config,
-    enabled: config.enabled !== undefined ? config.enabled : true
+    ...migratedConfig,
+    enabled: migratedConfig.enabled !== undefined ? migratedConfig.enabled : true
   };
   
   // Save to Chrome storage

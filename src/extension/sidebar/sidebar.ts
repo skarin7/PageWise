@@ -61,14 +61,6 @@ try {
   console.warn('Could not use defineProperty:', e);
 }
 
-// Log helper message immediately and verify functions are available
-console.log('%c💡 LLM Config Helpers Available', 'color: #667eea; font-weight: bold; font-size: 14px;');
-console.log('  - configureLLMExtraction(config) - Enable/configure LLM extraction');
-console.log('  - getLLMConfig() - Get current LLM config');
-console.log('');
-console.log('Example: await configureLLMExtraction({ enabled: true, provider: "transformers" })');
-console.log('');
-
 // Verify functions are available
 const testConfigure = typeof (window as any).configureLLMExtraction === 'function';
 const testGet = typeof (window as any).getLLMConfig === 'function';
@@ -127,111 +119,261 @@ async function loadSettings() {
     const config = await getLLMConfigFn();
     console.log('[Settings] Loaded config:', config);
     
+    // Determine mode (derive from agentMode if mode not set for backward compatibility)
+    const mode = config?.mode || (config?.agentMode ? 'online' : 'offline');
     const provider = config?.provider || 'transformers';
     
-    // Set provider dropdown
-    if (providerSelect) {
-      providerSelect.value = provider;
+    // Set mode selector
+    if (modeSelect) {
+      modeSelect.value = mode;
     }
     
-    // Set API URL
-    if (apiUrlInput) {
-      if (config?.apiUrl) {
-        apiUrlInput.value = config.apiUrl;
-      } else {
-        // Set defaults based on provider
-        if (provider === 'ollama') {
-          apiUrlInput.value = 'http://localhost:11434/api/generate';
-        } else if (provider === 'openai') {
-          apiUrlInput.value = 'https://api.openai.com/v1';
-        } else if (provider === 'custom') {
-          apiUrlInput.value = 'https://api.openai.com/v1';
+    // Set provider based on mode
+    if (mode === 'offline') {
+      // Offline mode: show offline provider selector
+      if (offlineProviderSelect) {
+        // Map provider to offline options
+        if (provider === 'transformers' || provider === 'ollama') {
+          offlineProviderSelect.value = provider;
+        } else {
+          offlineProviderSelect.value = 'transformers'; // Default for offline
         }
+      }
+      
+      // Set offline Ollama config if applicable
+      if (provider === 'ollama' && offlineOllamaUrlInput) {
+        offlineOllamaUrlInput.value = config?.apiUrl || 'http://localhost:11434';
+      }
+      
+      if (offlineTimeoutInput) {
+        offlineTimeoutInput.value = config?.timeout?.toString() || '30000';
+      }
+      
+      // Set model in offline model select
+      if (config?.model && offlineModelSelect) {
+        setTimeout(() => {
+          offlineModelSelect.value = config.model;
+        }, 1500);
+      }
+    } else {
+      // Online mode: show online provider selector
+      if (onlineProviderSelect) {
+        // Map provider to online options (openrouter is new)
+        if (provider === 'openrouter') {
+          onlineProviderSelect.value = 'openrouter';
+        } else if (provider === 'openai' || provider === 'custom' || provider === 'ollama') {
+          onlineProviderSelect.value = provider;
+        } else {
+          onlineProviderSelect.value = 'ollama'; // Default for online
+        }
+      }
+      
+      // Set online provider config
+      if (onlineApiUrlInput && (provider === 'ollama' || provider === 'custom')) {
+        onlineApiUrlInput.value = config?.apiUrl || (provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1');
+      }
+      
+      if (providerTokenInput && config?.apiKey) {
+        providerTokenInput.value = config.apiKey;
+      }
+      
+      if (onlineTimeoutInput) {
+        onlineTimeoutInput.value = config?.timeout?.toString() || '30000';
+      }
+      
+      // Set web search config (optional)
+      if (webSearchProviderSelect) {
+        const webSearchProvider = config?.webSearchProvider || 'ollama';
+        webSearchProviderSelect.value = webSearchProvider;
+      }
+      
+      // Set web search API key
+      if (webSearchApiKeyInput) {
+        if (config?.webSearchApiKey) {
+          webSearchApiKeyInput.value = config.webSearchApiKey;
+        }
+      }
+      
+      if (maxToolStepsInput) {
+        maxToolStepsInput.value = config?.maxToolSteps?.toString() || '3';
+      }
+      
+      // Set model in online model select
+      if (config?.model && onlineModelSelect) {
+        setTimeout(() => {
+          onlineModelSelect.value = config.model;
+        }, 1500);
       }
     }
     
-    // Set API key (if present)
-    if (apiKeyInput && config?.apiKey) {
-      apiKeyInput.value = config.apiKey;
-    }
+    // Update visibility based on mode
+    updateModeVisibility();
     
-    // Set timeout
-    if (timeoutInput) {
-      timeoutInput.value = config?.timeout?.toString() || '30000';
+    // Update web search provider options after loading settings
+    // This ensures Ollama is filtered out if main provider is Ollama
+    if (mode === 'online') {
+      updateOnlineProviderConfig();
     }
-    
-    // Set agent mode
-    if (agentModeCheckbox) {
-      agentModeCheckbox.checked = config?.agentMode || false;
-      updateAgentConfigVisibility();
-    }
-    
-    // Set agent config
-    if (maxToolStepsInput) {
-      maxToolStepsInput.value = config?.maxToolSteps?.toString() || '3';
-    }
-    
-    if (webSearchProviderSelect) {
-      webSearchProviderSelect.value = config?.webSearchProvider || 'tavily';
-    }
-    
-    if (webSearchApiKeyInput && config?.webSearchApiKey) {
-      webSearchApiKeyInput.value = config.webSearchApiKey;
-    }
-    
-    // Update visibility and fetch models
-    updateProviderConfigVisibility();
     
     // Update Transformers.js info banner
     updateTransformersInfoBanner();
-    
-    // Wait a bit for the dropdown to be populated, then set the saved model
-    if (config?.model && modelSelect) {
-      setTimeout(() => {
-        modelSelect.value = config.model;
-        console.log('[Settings] Set model to:', config.model);
-      }, 1500);
-    }
     
     console.log('[Settings] Settings loaded successfully');
   } catch (error) {
     console.error('[Settings] Failed to load settings:', error);
     // Set defaults on error
-    const defaultProvider = providerSelect?.value || 'transformers';
-    if (providerSelect) providerSelect.value = defaultProvider;
-    if (apiUrlInput) {
-      // Set default based on provider
-      if (defaultProvider === 'ollama') {
-        apiUrlInput.value = 'http://localhost:11434/api/generate';
-      } else if (defaultProvider === 'openai') {
-        apiUrlInput.value = 'https://api.openai.com/v1';
-      } else if (defaultProvider === 'custom') {
-        apiUrlInput.value = 'https://api.openai.com/v1';
-      } else {
-        apiUrlInput.value = 'http://localhost:11434/api/generate';
-      }
-    }
-    if (timeoutInput) timeoutInput.value = '30000';
-    updateProviderConfigVisibility();
+    if (modeSelect) modeSelect.value = 'offline';
+    if (offlineProviderSelect) offlineProviderSelect.value = 'transformers';
+    updateModeVisibility();
   }
 }
 
-function updateAgentConfigVisibility() {
-  if (agentConfigGroup && agentModeCheckbox) {
-    agentConfigGroup.style.display = agentModeCheckbox.checked ? 'block' : 'none';
-  }
+/**
+ * Update visibility based on mode selection (offline vs online)
+ */
+function updateModeVisibility() {
+  if (!modeSelect || !offlineModeConfig || !onlineModeConfig) return;
   
-  // Show warning if Transformers.js is selected with agent mode enabled
-  if (agentModeWarning && agentModeCheckbox && providerSelect) {
-    const isTransformers = providerSelect.value === 'transformers';
-    const isAgentModeEnabled = agentModeCheckbox.checked;
-    
-    if (isTransformers && isAgentModeEnabled) {
-      agentModeWarning.style.display = 'block';
-    } else {
-      agentModeWarning.style.display = 'none';
+  const mode = modeSelect.value as 'offline' | 'online';
+  
+  if (mode === 'offline') {
+    offlineModeConfig.style.display = 'block';
+    onlineModeConfig.style.display = 'none';
+  } else {
+    offlineModeConfig.style.display = 'none';
+    onlineModeConfig.style.display = 'block';
+    // Always show web search config in online mode
+    if (webSearchConfig) {
+      webSearchConfig.style.display = 'block';
     }
   }
+  
+  // Update provider-specific configs based on mode
+  if (mode === 'offline') {
+    updateOfflineProviderConfig();
+  } else {
+    updateOnlineProviderConfig();
+  }
+}
+
+/**
+ * Update offline provider configuration visibility
+ */
+function updateOfflineProviderConfig() {
+  if (!offlineProviderSelect || !offlineOllamaConfig) return;
+  
+  const provider = offlineProviderSelect.value;
+  
+  if (provider === 'ollama') {
+    offlineOllamaConfig.style.display = 'block';
+    // Fetch models for Ollama
+    if (offlineOllamaUrlInput) {
+      fetchModelsForProvider('ollama', offlineOllamaUrlInput.value, undefined, offlineModelSelect, offlineModelStatus);
+    }
+  } else {
+    offlineOllamaConfig.style.display = 'none';
+  }
+}
+
+/**
+ * Update online provider configuration visibility and token inputs
+ */
+function updateOnlineProviderConfig() {
+  if (!onlineProviderSelect || !onlineProviderConfigGroup) return;
+  
+  const provider = onlineProviderSelect.value;
+  
+  // Always show provider config group in online mode
+  onlineProviderConfigGroup.style.display = 'block';
+  
+  // Show/hide API URL based on provider
+  if (onlineApiUrlGroup) {
+    if (provider === 'ollama' || provider === 'custom') {
+      onlineApiUrlGroup.style.display = 'block';
+      if (onlineApiUrlHelp) {
+        if (provider === 'ollama') {
+          onlineApiUrlHelp.textContent = 'Ollama server base URL. Can be localhost (http://localhost:11434) or remote server.';
+        } else {
+          onlineApiUrlHelp.textContent = 'Custom API base URL (e.g., https://api.example.com/v1)';
+        }
+      }
+    } else {
+      onlineApiUrlGroup.style.display = 'none';
+    }
+  }
+  
+  // Show provider token input for all online providers
+  if (providerTokenGroup && providerTokenInput && providerTokenLabel && providerTokenHelp) {
+    providerTokenGroup.style.display = 'block';
+    
+    // Update label and help text based on provider
+    switch (provider) {
+      case 'ollama':
+        providerTokenLabel.textContent = 'Ollama API Token (for Web Search)';
+        providerTokenInput.placeholder = 'Enter Ollama API token from ollama.com';
+        providerTokenHelp.textContent = 'Required for Ollama web search. Get free API key from ollama.com (free account required).';
+        break;
+      case 'openai':
+        providerTokenLabel.textContent = 'OpenAI API Key';
+        providerTokenInput.placeholder = 'Enter OpenAI API key';
+        providerTokenHelp.textContent = 'Get your API key from platform.openai.com';
+        break;
+      case 'openrouter':
+        providerTokenLabel.textContent = 'OpenRouter API Key';
+        providerTokenInput.placeholder = 'Enter OpenRouter API key';
+        providerTokenHelp.textContent = 'Get your API key from openrouter.ai';
+        break;
+      case 'custom':
+        providerTokenLabel.textContent = 'API Key';
+        providerTokenInput.placeholder = 'Enter API key for your service';
+        providerTokenHelp.textContent = 'API key for your OpenAI-compatible service';
+        break;
+    }
+  }
+  
+  // Update web search provider options based on main provider
+  if (webSearchConfig && webSearchProviderSelect) {
+    // Always show the web search provider selector (web search is optional)
+    const webSearchProviderGroup = webSearchProviderSelect.closest('.form-group') as HTMLElement;
+    if (webSearchProviderGroup) {
+      webSearchProviderGroup.style.display = 'block';
+    }
+    
+    // Show all options including Ollama (users can choose any provider)
+    const allOptions = Array.from(webSearchProviderSelect.options) as HTMLOptionElement[];
+    allOptions.forEach(option => {
+      option.style.display = 'block';
+      option.disabled = false;
+    });
+    
+    // Update web search API key label based on selected web search provider
+    const selectedWebSearchProvider = webSearchProviderSelect.value;
+    const webSearchApiKeyLabel = document.querySelector('label[for="web-search-api-key"]') as HTMLLabelElement;
+    const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
+    
+    if (webSearchApiKeyLabel && webSearchApiKeyInput) {
+      if (selectedWebSearchProvider === 'ollama') {
+        webSearchApiKeyLabel.textContent = 'Ollama API Token (for Web Search)';
+        webSearchApiKeyInput.placeholder = 'Enter Ollama API token from ollama.com';
+      } else {
+        webSearchApiKeyLabel.textContent = 'Web Search API Key';
+        webSearchApiKeyInput.placeholder = 'Enter API key for search provider';
+      }
+    }
+  }
+  
+  // Fetch models for the selected provider
+  const apiUrl = onlineApiUrlInput?.value || (provider === 'ollama' ? 'http://localhost:11434' : undefined);
+  const apiKey = providerTokenInput?.value;
+  fetchModelsForProvider(provider, apiUrl, apiKey, onlineModelSelect, onlineModelStatus);
+}
+
+/**
+ * Legacy function - kept for backward compatibility but no longer used
+ */
+function updateAgentConfigVisibility() {
+  // This function is deprecated - mode visibility is now handled by updateModeVisibility()
+  // Keeping for backward compatibility in case any code still references it
 }
 
 async function updateTransformersInfoBanner() {
@@ -278,11 +420,11 @@ function updateProviderConfigVisibility() {
       if (provider === 'ollama') {
         apiUrlGroup.style.display = 'block';
         if (apiUrlLabel) apiUrlLabel.textContent = 'API URL';
-        apiUrlInput.placeholder = 'http://localhost:11434/api/generate';
-        apiUrlHelp.textContent = 'Ollama API endpoint URL. Change this to refresh the model list.';
+        apiUrlInput.placeholder = 'http://localhost:11434';
+        apiUrlHelp.textContent = 'Ollama server base URL. Set to: http://localhost:11434 (or your Ollama server address). The code will automatically use /api/chat for agent mode or /api/generate for regular mode.';
         // Set default if empty
         if (!apiUrlInput.value || apiUrlInput.value === 'https://api.openai.com/v1') {
-          apiUrlInput.value = 'http://localhost:11434/api/generate';
+          apiUrlInput.value = 'http://localhost:11434';
         }
       } else if (provider === 'openai') {
         apiUrlGroup.style.display = 'block';
@@ -290,7 +432,7 @@ function updateProviderConfigVisibility() {
         apiUrlInput.placeholder = 'https://api.openai.com/v1';
         apiUrlHelp.textContent = 'OpenAI API base URL (default: https://api.openai.com/v1)';
         // Set default if empty
-        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434/api/generate') {
+        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434' || apiUrlInput.value === 'http://localhost:11434/api' || apiUrlInput.value === 'http://localhost:11434/api/generate') {
           apiUrlInput.value = 'https://api.openai.com/v1';
         }
       } else if (provider === 'custom') {
@@ -299,7 +441,7 @@ function updateProviderConfigVisibility() {
         apiUrlInput.placeholder = 'https://your-api.com/v1';
         apiUrlHelp.textContent = 'Custom OpenAI-compatible API base URL (must end with /v1)';
         // Set default if empty
-        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434/api/generate') {
+        if (!apiUrlInput.value || apiUrlInput.value === 'http://localhost:11434' || apiUrlInput.value === 'http://localhost:11434/api' || apiUrlInput.value === 'http://localhost:11434/api/generate') {
           apiUrlInput.value = 'https://api.openai.com/v1';
         }
       }
@@ -326,35 +468,45 @@ function updateProviderConfigVisibility() {
   }
 }
 
-async function fetchProviderModels() {
-  if (!modelSelect || !modelStatus || !providerSelect) return;
+/**
+ * Fetch models for a provider (works with any model select element)
+ */
+async function fetchModelsForProvider(
+  provider: string,
+  apiUrl?: string,
+  apiKey?: string,
+  modelSelectElement?: HTMLSelectElement,
+  modelStatusElement?: HTMLElement,
+  timeout?: number
+) {
+  const targetModelSelect = modelSelectElement || modelSelect;
+  const targetModelStatus = modelStatusElement || modelStatus;
   
-  const provider = providerSelect.value;
+  if (!targetModelSelect) return;
   
   if (provider === 'transformers') {
     return; // No models to fetch for transformers
   }
   
-  // Get API URL from input or use default
-  let apiUrl = apiUrlInput?.value?.trim();
-  const apiKey = apiKeyInput?.value?.trim();
-  const timeout = parseInt(timeoutInput?.value || '10000', 10);
-  
   // Set defaults based on provider
   if (!apiUrl) {
     if (provider === 'ollama') {
-      apiUrl = 'http://localhost:11434/api/generate';
-    } else if (provider === 'openai') {
+      apiUrl = 'http://localhost:11434';
+    } else if (provider === 'openai' || provider === 'openrouter') {
+      apiUrl = 'https://api.openai.com/v1';
+    } else if (provider === 'custom') {
       apiUrl = 'https://api.openai.com/v1';
     }
   }
   
+  const requestTimeout = timeout || parseInt(timeoutInput?.value || '10000', 10);
+  
   // Show loading state
-  modelSelect.innerHTML = '<option value="">Loading models...</option>';
-  modelSelect.disabled = true;
-  if (modelStatus) {
-    modelStatus.textContent = `Fetching available models from ${provider}...`;
-    modelStatus.style.color = '#666';
+  targetModelSelect.innerHTML = '<option value="">Loading models...</option>';
+  targetModelSelect.disabled = true;
+  if (targetModelStatus) {
+    targetModelStatus.textContent = `Fetching available models from ${provider}...`;
+    targetModelStatus.style.color = '#666';
   }
   
   try {
@@ -365,7 +517,7 @@ async function fetchProviderModels() {
           provider: provider,
           apiUrl: apiUrl,
           apiKey: apiKey,
-          timeout: timeout
+          timeout: requestTimeout
         },
         (response) => {
           if (chrome.runtime.lastError) {
@@ -379,18 +531,18 @@ async function fetchProviderModels() {
     
     if (response.success && response.models && response.models.length > 0) {
       // Populate dropdown with models
-      modelSelect.innerHTML = '<option value="">Select a model...</option>';
+      targetModelSelect.innerHTML = '<option value="">Select a model...</option>';
       response.models.forEach((model) => {
         const option = document.createElement('option');
         option.value = model.name;
         option.textContent = model.label || model.name;
-        modelSelect.appendChild(option);
+        targetModelSelect.appendChild(option);
       });
       
-      modelSelect.disabled = false;
-      if (modelStatus) {
-        modelStatus.textContent = `${response.models.length} model(s) available`;
-        modelStatus.style.color = '#4caf50';
+      targetModelSelect.disabled = false;
+      if (targetModelStatus) {
+        targetModelStatus.textContent = `${response.models.length} model(s) available`;
+        targetModelStatus.style.color = '#4caf50';
       }
       
       // If we have a saved model, select it
@@ -398,101 +550,136 @@ async function fetchProviderModels() {
       if (savedConfig && savedConfig.model) {
         const matchingModel = response.models.find(m => m.name === savedConfig.model);
         if (matchingModel) {
-          modelSelect.value = savedConfig.model;
+          targetModelSelect.value = savedConfig.model;
         }
       }
     } else {
-      modelSelect.innerHTML = '<option value="">No models found</option>';
-      modelSelect.disabled = false;
-      if (modelStatus) {
+      targetModelSelect.innerHTML = '<option value="">No models found</option>';
+      targetModelSelect.disabled = false;
+      if (targetModelStatus) {
         const errorMsg = response.error || `No models available. Make sure ${provider} is configured correctly.`;
-        modelStatus.textContent = errorMsg;
-        modelStatus.style.color = '#f44336';
+        targetModelStatus.textContent = errorMsg;
+        targetModelStatus.style.color = '#f44336';
       }
     }
   } catch (error) {
     console.error('[Settings] Failed to fetch models:', error);
-    modelSelect.innerHTML = '<option value="">Error loading models</option>';
-    modelSelect.disabled = false;
-    if (modelStatus) {
+    targetModelSelect.innerHTML = '<option value="">Error loading models</option>';
+    targetModelSelect.disabled = false;
+    if (targetModelStatus) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      modelStatus.textContent = `Error: ${errorMessage}. Check your configuration.`;
-      modelStatus.style.color = '#f44336';
+      targetModelStatus.textContent = `Error: ${errorMessage}. Check your configuration.`;
+      targetModelStatus.style.color = '#f44336';
     }
   }
 }
 
+/**
+ * Legacy function - kept for backward compatibility
+ */
+async function fetchProviderModels() {
+  // Use the new fetchModelsForProvider with legacy elements
+  const provider = providerSelect?.value || 'transformers';
+  const apiUrl = apiUrlInput?.value?.trim();
+  const apiKey = apiKeyInput?.value?.trim();
+  await fetchModelsForProvider(provider, apiUrl, apiKey, modelSelect, modelStatus);
+}
+
 async function saveSettings() {
   try {
-    const provider = providerSelect?.value || 'transformers';
+    if (!modeSelect) {
+      console.error('[Settings] Mode selector not found');
+      return;
+    }
     
-    let config: any;
+    const mode = modeSelect.value as 'offline' | 'online';
+    let config: any = {
+      enabled: true,
+      mode: mode,
+      agentMode: mode === 'online' // Derive agentMode from mode
+    };
     
-    if (provider === 'transformers') {
-      // Default: Transformers.js
-      config = {
-        enabled: true,
-        provider: 'transformers',
-        model: 'Xenova/LaMini-Flan-T5-783M' // Default transformer model
-      };
+    if (mode === 'offline') {
+      // Offline mode configuration
+      const provider = offlineProviderSelect?.value || 'transformers';
+      config.provider = provider;
+      
+      if (provider === 'transformers') {
+        config.model = 'Xenova/LaMini-Flan-T5-783M'; // Default transformer model
+      } else if (provider === 'ollama') {
+        const model = offlineModelSelect?.value?.trim();
+        if (!model) {
+          alert('Please select an Ollama model from the dropdown');
+          return;
+        }
+        config.model = model;
+        config.apiUrl = offlineOllamaUrlInput?.value?.trim() || 'http://localhost:11434';
+        config.timeout = parseInt(offlineTimeoutInput?.value || '30000', 10);
+      }
     } else {
-      // Other providers require model selection
-      const model = modelSelect?.value?.trim();
+      // Online mode configuration
+      const provider = onlineProviderSelect?.value || 'ollama';
+      config.provider = provider;
+      
+      const model = onlineModelSelect?.value?.trim();
       if (!model) {
         alert(`Please select a model from the dropdown for ${provider}`);
         return;
       }
+      config.model = model;
+      config.timeout = parseInt(onlineTimeoutInput?.value || '30000', 10);
       
-      config = {
-        enabled: true,
-        provider: provider,
-        model: model,
-        timeout: parseInt(timeoutInput?.value || '30000', 10)
-      };
-      
-      // Add API URL for providers that need it
+      // Provider-specific configuration
       if (provider === 'ollama') {
-        config.apiUrl = apiUrlInput?.value?.trim() || 'http://localhost:11434/api/generate';
-      } else if (provider === 'openai' || provider === 'custom') {
-        const apiUrl = apiUrlInput?.value?.trim();
-        // Default to OpenAI base URL if not provided
-        config.apiUrl = apiUrl || 'https://api.openai.com/v1';
-        
-        // API key is required for OpenAI and custom
-        const apiKey = apiKeyInput?.value?.trim();
+        config.apiUrl = onlineApiUrlInput?.value?.trim() || 'http://localhost:11434';
+        // Ollama API token is for web search, not for LLM (can use localhost)
+        // But we still need to check if web search API key is provided
+      } else if (provider === 'openai') {
+        config.apiUrl = 'https://api.openai.com/v1';
+        const apiKey = providerTokenInput?.value?.trim();
         if (!apiKey) {
-          alert(`API key is required for ${provider}`);
+          alert('OpenAI API key is required for online mode');
+          return;
+        }
+        config.apiKey = apiKey;
+      } else if (provider === 'openrouter') {
+        config.apiUrl = 'https://openrouter.ai/api/v1';
+        const apiKey = providerTokenInput?.value?.trim();
+        if (!apiKey) {
+          alert('OpenRouter API key is required for online mode');
+          return;
+        }
+        config.apiKey = apiKey;
+      } else if (provider === 'custom') {
+        const apiUrl = onlineApiUrlInput?.value?.trim();
+        if (!apiUrl) {
+          alert('Base URL is required for custom API');
+          return;
+        }
+        config.apiUrl = apiUrl;
+        const apiKey = providerTokenInput?.value?.trim();
+        if (!apiKey) {
+          alert('API key is required for custom API');
           return;
         }
         config.apiKey = apiKey;
       }
-    }
-    
-    // Add agent mode settings
-    if (agentModeCheckbox) {
-      const requestedAgentMode = agentModeCheckbox.checked;
       
-      // Auto-disable agent mode for Transformers.js
-      if (provider === 'transformers' && requestedAgentMode) {
-        config.agentMode = false;
-        agentModeCheckbox.checked = false;
-        updateAgentConfigVisibility();
-        alert('⚠️ Agent mode is not supported with Transformers.js. Only basic semantic search is available. Please use Ollama, OpenAI, or Custom API for agent mode with tool calling.');
+      // Web search configuration (optional for online mode)
+      config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
+      
+      // Get web search provider (optional)
+      const webSearchProvider = webSearchProviderSelect?.value;
+      const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
+      
+      // Only configure web search if both provider and API key are provided
+      if (webSearchProvider && webSearchApiKey) {
+        config.webSearchProvider = webSearchProvider;
+        config.webSearchApiKey = webSearchApiKey;
       } else {
-        config.agentMode = requestedAgentMode;
-        
-        if (config.agentMode) {
-          config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
-          config.webSearchProvider = webSearchProviderSelect?.value || 'tavily';
-          
-          const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
-          if (webSearchApiKey) {
-            config.webSearchApiKey = webSearchApiKey;
-          } else {
-            // Warn but don't block - user might add API key later
-            console.warn('Agent mode enabled but no web search API key provided');
-          }
-        }
+        // Web search is optional - don't configure it if not provided
+        config.webSearchProvider = undefined;
+        config.webSearchApiKey = undefined;
       }
     }
     
@@ -608,6 +795,40 @@ const settingsModal = document.getElementById('settings-modal') as HTMLDivElemen
 const settingsClose = document.getElementById('settings-close') as HTMLButtonElement;
 const settingsCancel = document.getElementById('settings-cancel') as HTMLButtonElement;
 const settingsForm = document.getElementById('settings-form') as HTMLFormElement;
+// Mode selector
+const modeSelect = document.getElementById('mode-select') as HTMLSelectElement;
+const offlineModeConfig = document.getElementById('offline-mode-config') as HTMLDivElement;
+const onlineModeConfig = document.getElementById('online-mode-config') as HTMLDivElement;
+
+// Offline mode elements
+const offlineProviderSelect = document.getElementById('offline-provider') as HTMLSelectElement;
+const offlineOllamaConfig = document.getElementById('offline-ollama-config') as HTMLDivElement;
+const offlineOllamaUrlInput = document.getElementById('offline-ollama-url') as HTMLInputElement;
+const offlineModelSelect = document.getElementById('offline-model') as HTMLSelectElement;
+const offlineModelStatus = document.getElementById('offline-model-status') as HTMLElement;
+const offlineTimeoutInput = document.getElementById('offline-timeout') as HTMLInputElement;
+
+// Online mode elements
+const onlineProviderSelect = document.getElementById('online-provider') as HTMLSelectElement;
+const onlineProviderConfigGroup = document.getElementById('online-provider-config-group') as HTMLDivElement;
+const onlineApiUrlGroup = document.getElementById('online-api-url-group') as HTMLDivElement;
+const onlineApiUrlInput = document.getElementById('online-api-url') as HTMLInputElement;
+const onlineApiUrlHelp = document.getElementById('online-api-url-help') as HTMLElement;
+const providerTokenGroup = document.getElementById('provider-token-group') as HTMLDivElement;
+const providerTokenInput = document.getElementById('provider-token') as HTMLInputElement;
+const providerTokenLabel = document.getElementById('provider-token-label') as HTMLLabelElement;
+const providerTokenHelp = document.getElementById('provider-token-help') as HTMLElement;
+const onlineModelSelect = document.getElementById('online-model') as HTMLSelectElement;
+const onlineModelStatus = document.getElementById('online-model-status') as HTMLElement;
+const onlineTimeoutInput = document.getElementById('online-timeout') as HTMLInputElement;
+
+// Web search config (online mode)
+const webSearchConfig = document.getElementById('web-search-config') as HTMLDivElement;
+const maxToolStepsInput = document.getElementById('max-tool-steps') as HTMLInputElement;
+const webSearchProviderSelect = document.getElementById('web-search-provider') as HTMLSelectElement;
+const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
+
+// Legacy elements (kept for backward compatibility, hidden)
 const providerSelect = document.getElementById('provider') as HTMLSelectElement;
 const providerConfigGroup = document.getElementById('provider-config-group') as HTMLDivElement;
 const apiUrlGroup = document.getElementById('api-url-group') as HTMLDivElement;
@@ -620,12 +841,6 @@ const apiKeyHelp = document.getElementById('api-key-help') as HTMLElement;
 const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const modelStatus = document.getElementById('model-status') as HTMLElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
-const agentModeCheckbox = document.getElementById('agent-mode') as HTMLInputElement;
-const agentConfigGroup = document.getElementById('agent-config-group') as HTMLDivElement;
-const agentModeWarning = document.getElementById('agent-mode-warning') as HTMLDivElement;
-const maxToolStepsInput = document.getElementById('max-tool-steps') as HTMLInputElement;
-const webSearchProviderSelect = document.getElementById('web-search-provider') as HTMLSelectElement;
-const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
 const settingsExportBtn = document.getElementById('settings-export') as HTMLButtonElement;
 const settingsImportBtn = document.getElementById('settings-import') as HTMLButtonElement;
 const settingsImportFile = document.getElementById('settings-import-file') as HTMLInputElement;
@@ -744,25 +959,70 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Provider selection handler
-  if (providerSelect) {
-    providerSelect.addEventListener('change', () => {
-      updateProviderConfigVisibility();
-      updateAgentConfigVisibility(); // Also update agent warning when provider changes
-      updateTransformersInfoBanner(); // Update info banner when provider changes
+  // Mode selector
+  if (modeSelect) {
+    modeSelect.addEventListener('change', () => {
+      updateModeVisibility();
+      updateTransformersInfoBanner();
     });
   }
   
-  // Agent mode checkbox
-  if (agentModeCheckbox) {
-    agentModeCheckbox.addEventListener('change', () => {
-      updateAgentConfigVisibility();
+  // Offline provider selector
+  if (offlineProviderSelect) {
+    offlineProviderSelect.addEventListener('change', () => {
+      updateOfflineProviderConfig();
+    });
+  }
+  
+  // Online provider selector
+  if (onlineProviderSelect) {
+    onlineProviderSelect.addEventListener('change', () => {
+      updateOnlineProviderConfig();
+    });
+  }
+  
+  // Legacy provider selector (kept for backward compatibility, but hidden)
+  if (providerSelect) {
+    providerSelect.addEventListener('change', () => {
+      updateProviderConfigVisibility();
+      updateTransformersInfoBanner();
     });
   }
   
   // Initial visibility update
-  updateAgentConfigVisibility();
+  updateModeVisibility();
   
-  // Re-fetch models when API URL or API key changes
+  // Re-fetch models when offline Ollama URL changes
+  if (offlineOllamaUrlInput) {
+    offlineOllamaUrlInput.addEventListener('blur', () => {
+      if (offlineProviderSelect?.value === 'ollama') {
+        fetchModelsForProvider('ollama', offlineOllamaUrlInput.value, undefined, offlineModelSelect, offlineModelStatus);
+      }
+    });
+  }
+  
+  // Re-fetch models when online API URL or token changes
+  if (onlineApiUrlInput) {
+    onlineApiUrlInput.addEventListener('blur', () => {
+      if (onlineProviderSelect?.value && modeSelect?.value === 'online') {
+        const provider = onlineProviderSelect.value;
+        const apiKey = providerTokenInput?.value;
+        fetchModelsForProvider(provider, onlineApiUrlInput.value, apiKey, onlineModelSelect, onlineModelStatus);
+      }
+    });
+  }
+  
+  if (providerTokenInput) {
+    providerTokenInput.addEventListener('blur', () => {
+      if (onlineProviderSelect?.value && modeSelect?.value === 'online') {
+        const provider = onlineProviderSelect.value;
+        const apiUrl = onlineApiUrlInput?.value;
+        fetchModelsForProvider(provider, apiUrl, providerTokenInput.value, onlineModelSelect, onlineModelStatus);
+      }
+    });
+  }
+  
+  // Legacy: Re-fetch models when API URL or API key changes (kept for backward compatibility)
   if (apiUrlInput) {
     apiUrlInput.addEventListener('blur', () => {
       if (providerSelect?.value !== 'transformers') {

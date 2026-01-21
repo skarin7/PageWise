@@ -11,7 +11,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import type { LLMConfig } from '../utils/llmContentExtraction';
 
 export interface AISDKProviderConfig {
-  provider: 'ollama' | 'openai' | 'custom' | 'transformers';
+  provider: 'ollama' | 'openai' | 'openrouter' | 'custom' | 'transformers';
   model: string;
   apiUrl?: string;
   apiKey?: string;
@@ -24,9 +24,29 @@ export interface AISDKProviderConfig {
 export function createAISDKModel(config: AISDKProviderConfig): any {
   switch (config.provider) {
     case 'ollama': {
-      const baseUrl = config.apiUrl || 'http://localhost:11434/api';
-      // Ensure baseUrl ends with /api
-      const normalizedBaseUrl = baseUrl.endsWith('/api') ? baseUrl : `${baseUrl.replace(/\/$/, '')}/api`;
+      // Normalize Ollama URL - handle various formats users might enter
+      let baseUrl = config.apiUrl || 'http://localhost:11434';
+      
+      // Remove common Ollama endpoint paths that users might include
+      baseUrl = baseUrl
+        .replace(/\/api\/generate$/, '')  // Remove /api/generate
+        .replace(/\/api\/chat$/, '')      // Remove /api/chat
+        .replace(/\/api\/tags$/, '')      // Remove /api/tags
+        .replace(/\/generate$/, '')       // Remove /generate
+        .replace(/\/chat$/, '')           // Remove /chat
+        .replace(/\/$/, '');              // Remove trailing slash
+      
+      // Ensure baseUrl ends with /api (ollama-ai-provider expects this)
+      // Default Ollama server runs on http://localhost:11434, API is at /api
+      const normalizedBaseUrl = baseUrl.endsWith('/api') 
+        ? baseUrl 
+        : `${baseUrl}/api`;
+      
+      console.log('[AISDKProvider] Ollama baseURL normalized:', {
+        original: config.apiUrl,
+        normalized: normalizedBaseUrl
+      });
+      
       const ollamaProvider = createOllama({
         baseURL: normalizedBaseUrl
       });
@@ -69,9 +89,20 @@ export function createAISDKModel(config: AISDKProviderConfig): any {
  * Convert LLMConfig to AISDKProviderConfig
  */
 export function convertLLMConfigToAISDKConfig(llmConfig: LLMConfig): AISDKProviderConfig {
+  // Map openrouter to the provider type
+  const provider = (llmConfig.provider === 'openrouter' ? 'openrouter' : llmConfig.provider) || 'transformers';
+  
+  // Set default model based on provider
+  let defaultModel = 'gpt-3.5-turbo';
+  if (provider === 'ollama') {
+    defaultModel = 'llama3';
+  } else if (provider === 'openrouter') {
+    defaultModel = 'openai/gpt-3.5-turbo'; // OpenRouter model format
+  }
+  
   return {
-    provider: llmConfig.provider || 'transformers',
-    model: llmConfig.model || (llmConfig.provider === 'ollama' ? 'llama3' : 'gpt-3.5-turbo'),
+    provider: provider as any,
+    model: llmConfig.model || defaultModel,
     apiUrl: llmConfig.apiUrl,
     apiKey: llmConfig.apiKey
   };

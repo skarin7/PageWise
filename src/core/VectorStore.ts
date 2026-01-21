@@ -96,6 +96,11 @@ export class VectorStore {
       // Calculate content hash from current chunks
       const contentHash = this.calculateContentHash(chunksData);
       
+      // Get embedding provider and model metadata
+      const embeddingProvider = this.embedder.getEmbeddingProvider();
+      const embeddingModel = this.embedder.getEmbeddingModel();
+      const embeddingKey = this.embedder.getEmbeddingKey();
+      
       // Use a separate IndexedDB database for embeddings
       const embeddingsDbName = `embeddings_${this.dbName}`;
       
@@ -108,12 +113,15 @@ export class VectorStore {
           const transaction = db.transaction(['embeddings'], 'readwrite');
           const store = transaction.objectStore('embeddings');
           
-          // Store embeddings as JSON with content hash
+          // Store embeddings as JSON with content hash and embedding metadata
           const putRequest = store.put({
             id: 'embeddings',
             data: embeddingsData,
             chunks: chunksData,
             contentHash: contentHash,
+            embeddingProvider: embeddingProvider,
+            embeddingModel: embeddingModel,
+            embeddingKey: embeddingKey,
             timestamp: Date.now()
           });
           
@@ -162,6 +170,34 @@ export class VectorStore {
           getRequest.onsuccess = () => {
             const result = getRequest.result;
             if (result && result.data) {
+              // Validate embedding provider/model compatibility
+              const storedKey = result.embeddingKey;
+              const storedProvider = result.embeddingProvider;
+              const storedModel = result.embeddingModel;
+              const currentKey = this.embedder.getEmbeddingKey();
+              const currentProvider = this.embedder.getEmbeddingProvider();
+              const currentModel = this.embedder.getEmbeddingModel();
+              
+              // Check compatibility: prefer embeddingKey if available, otherwise check provider+model
+              // If fields are missing (old format), treat as incompatible
+              const isCompatible = storedKey 
+                ? storedKey === currentKey
+                : (storedProvider && storedModel && storedProvider === currentProvider && storedModel === currentModel);
+              
+              if (!isCompatible) {
+                const oldKey = storedKey || (storedProvider && storedModel ? `${storedProvider}:${storedModel}` : 'legacy (no metadata)');
+                if (!storedKey && !storedProvider && !storedModel) {
+                  console.log(`[VectorStore] Migrating legacy embeddings (no provider/model metadata) to ${currentKey}. Clearing old embeddings.`);
+                } else {
+                  console.warn(`[VectorStore] Embedding provider/model changed: ${oldKey} -> ${currentKey}. Clearing embeddings.`);
+                }
+                this.embeddings.clear();
+                this.chunkCache.clear();
+                // Will regenerate on next init
+                resolve();
+                return;
+              }
+              
               // Restore embeddings
               for (const [chunkId, embedding] of Object.entries(result.data)) {
                 this.embeddings.set(chunkId, embedding as number[]);
@@ -174,7 +210,7 @@ export class VectorStore {
                 }
               }
               
-              console.log(`Loaded ${this.embeddings.size} embeddings from IndexedDB`);
+              console.log(`Loaded ${this.embeddings.size} embeddings from IndexedDB (${currentKey})`);
             }
             resolve();
           };
@@ -559,13 +595,40 @@ export class VectorStore {
               return;
             }
             
-            const isValid = currentHash === storedHash;
-            if (!isValid) {
+            // Check content hash first
+            const contentHashValid = currentHash === storedHash;
+            if (!contentHashValid) {
               console.log('[VectorStore] Content hash mismatch - embeddings are stale');
               console.log('[VectorStore] Stored hash:', storedHash);
               console.log('[VectorStore] Current hash:', currentHash);
+              resolve(false);
+              return;
             }
-            resolve(isValid);
+            
+            // Check embedding provider/model compatibility
+            const storedKey = result?.embeddingKey;
+            const storedProvider = result?.embeddingProvider;
+            const storedModel = result?.embeddingModel;
+            const currentKey = this.embedder.getEmbeddingKey();
+            const currentProvider = this.embedder.getEmbeddingProvider();
+            const currentModel = this.embedder.getEmbeddingModel();
+            
+            // Check compatibility: prefer embeddingKey if available, otherwise check provider+model
+            // If fields are missing (old format), treat as incompatible
+            const isCompatible = storedKey 
+              ? storedKey === currentKey
+              : (storedProvider && storedModel && storedProvider === currentProvider && storedModel === currentModel);
+            
+            if (!isCompatible) {
+              const oldKey = storedKey || (storedProvider && storedModel ? `${storedProvider}:${storedModel}` : 'unknown');
+              console.log('[VectorStore] Embedding provider/model mismatch - embeddings are incompatible');
+              console.log('[VectorStore] Stored:', oldKey);
+              console.log('[VectorStore] Current:', currentKey);
+              resolve(false);
+              return;
+            }
+            
+            resolve(true);
           };
           
           getRequest.onerror = () => resolve(false);

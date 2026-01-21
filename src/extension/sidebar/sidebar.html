@@ -798,22 +798,180 @@
       </div>
       
       <div class="settings-info">
-        <strong>ℹ️ Default: Transformers.js</strong>
-        The extension uses Transformers.js (local model) by default. Select a provider below to use a different LLM.
+        <strong>ℹ️ Choose your mode</strong>
+        Select Offline for local-only usage, or Online for web search and tool calling capabilities.
       </div>
       
       <form class="settings-form" id="settings-form">
-        <div class="form-group">
-          <label for="provider">LLM Provider</label>
-          <select id="provider" name="provider">
-            <option value="transformers">Transformers.js (Local - Default)</option>
-            <option value="ollama">Ollama (Local)</option>
-            <option value="openai">OpenAI</option>
-            <option value="custom">Custom OpenAI-compatible API</option>
+        <!-- Mode Selection (First, at top) -->
+        <div class="form-group" style="margin-bottom: 20px;">
+          <label for="mode-select" style="font-weight: 600; margin-bottom: 10px; display: block;">Mode</label>
+          <select id="mode-select" name="mode" style="width: 100%; padding: 8px; font-size: 14px;">
+            <option value="offline">Offline (Local Only)</option>
+            <option value="online">Online (With Web Search)</option>
           </select>
-          <small>Select the LLM provider to use for content extraction and search</small>
+          <small>Offline: Local models only, no internet access. Online: Enables web search and tool calling.</small>
         </div>
         
+        <!-- Offline Mode Configuration -->
+        <div id="offline-mode-config" style="display: none;">
+          <div class="form-group">
+            <label for="offline-provider">Local Provider</label>
+            <select id="offline-provider" name="provider">
+              <option value="transformers">Transformers.js (Default)</option>
+              <option value="ollama">Ollama (Local)</option>
+            </select>
+            <small>Select a local model provider. No API tokens required.</small>
+          </div>
+          
+          <!-- Ollama local config (only shown when offline + ollama selected) -->
+          <div id="offline-ollama-config" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
+            <div class="form-group" id="offline-ollama-url-group">
+              <label for="offline-ollama-url">Ollama Server URL</label>
+              <input 
+                type="text" 
+                id="offline-ollama-url" 
+                name="apiUrl" 
+                placeholder="http://localhost:11434"
+              />
+              <small>Local Ollama server address. No API token needed for offline mode.</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="offline-model">Model</label>
+              <select id="offline-model" name="model">
+                <option value="">Select provider first...</option>
+              </select>
+              <small id="offline-model-status">Select Ollama to load available models</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="offline-timeout">Request Timeout (ms)</label>
+              <input 
+                type="number" 
+                id="offline-timeout" 
+                name="timeout" 
+                placeholder="30000"
+                min="5000"
+                max="300000"
+              />
+              <small>Request timeout in milliseconds (default: 30000)</small>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Online Mode Configuration -->
+        <div id="online-mode-config" style="display: none;">
+          <div class="form-group">
+            <label for="online-provider">Provider</label>
+            <select id="online-provider" name="provider">
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="custom">Custom OpenAI-compatible API</option>
+            </select>
+            <small>Select your LLM provider. API tokens required for online mode.</small>
+          </div>
+          
+          <!-- Provider-specific configuration -->
+          <div id="online-provider-config-group" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
+            <!-- API URL (for Ollama, Custom) -->
+            <div class="form-group" id="online-api-url-group" style="display: none;">
+              <label for="online-api-url">Base URL</label>
+              <input 
+                type="text" 
+                id="online-api-url" 
+                name="apiUrl" 
+                placeholder="http://localhost:11434"
+              />
+              <small id="online-api-url-help">API endpoint URL</small>
+            </div>
+            
+            <!-- Provider Token Inputs -->
+            <div class="form-group" id="provider-token-group" style="display: none;">
+              <label id="provider-token-label" for="provider-token">API Token</label>
+              <input 
+                type="password" 
+                id="provider-token" 
+                name="apiKey" 
+                placeholder="Enter API token"
+              />
+              <small id="provider-token-help">API token required for this provider</small>
+            </div>
+            
+            <!-- Model Selection -->
+            <div class="form-group">
+              <label for="online-model">Model</label>
+              <select id="online-model" name="model">
+                <option value="">Select provider first...</option>
+              </select>
+              <small id="online-model-status">Select a provider to load available models</small>
+            </div>
+            
+            <!-- Timeout -->
+            <div class="form-group">
+              <label for="online-timeout">Request Timeout (ms)</label>
+              <input 
+                type="number" 
+                id="online-timeout" 
+                name="timeout" 
+                placeholder="30000"
+                min="5000"
+                max="300000"
+              />
+              <small>Request timeout in milliseconds (default: 30000)</small>
+            </div>
+          </div>
+          
+          <!-- Web Search Configuration (optional for online mode) -->
+          <div id="web-search-config" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
+            <label style="font-weight: 600; margin-bottom: 10px; display: block;">🌐 Web Search Configuration (Optional)</label>
+            <small style="display: block; margin-bottom: 15px; color: #666;">
+              Configure web search for getting current information. Optional - leave empty to use only page content.
+            </small>
+            
+            <div class="form-group">
+              <label for="web-search-provider">Web Search Provider</label>
+              <select id="web-search-provider" name="webSearchProvider">
+                <option value="ollama">Ollama (Native - Recommended for Ollama users)</option>
+                <option value="tavily">Tavily</option>
+                <option value="serper">Serper</option>
+                <option value="google">Google Custom Search</option>
+              </select>
+              <small>Select the search provider for web search tool.</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="web-search-api-key">Web Search API Key</label>
+              <input 
+                type="password" 
+                id="web-search-api-key" 
+                name="webSearchApiKey" 
+                placeholder="Enter API key for search provider"
+              />
+              <small>
+                API key required if you want to enable web search. Leave empty to disable web search.
+                <strong>For Ollama:</strong> Get your free API key from <a href="https://ollama.com" target="_blank">ollama.com</a> (free account required).
+                <strong>For others:</strong> Get keys from <a href="https://tavily.com" target="_blank">Tavily</a>, <a href="https://serper.dev" target="_blank">Serper</a>, or <a href="https://developers.google.com/custom-search" target="_blank">Google</a>.
+              </small>
+            </div>
+            
+            <div class="form-group">
+              <label for="max-tool-steps">Max Tool Steps</label>
+              <input 
+                type="number" 
+                id="max-tool-steps" 
+                name="maxToolSteps" 
+                placeholder="3"
+                min="1"
+                max="10"
+              />
+              <small>Maximum number of tool calls per query (default: 3)</small>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Legacy provider config group (hidden, kept for backward compatibility) -->
         <div id="provider-config-group" style="display: none;">
           <div class="form-group" id="api-url-group">
             <label for="api-url">Base URL</label>
@@ -856,64 +1014,6 @@
               max="300000"
             />
             <small>Request timeout in milliseconds (default: 30000)</small>
-          </div>
-        </div>
-        
-        <div class="form-group" style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px;">
-          <label style="font-weight: 600; margin-bottom: 10px; display: block;">🤖 Agent Mode</label>
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-            <input 
-              type="checkbox" 
-              id="agent-mode" 
-              name="agentMode"
-              style="width: auto; margin: 0;"
-            />
-            <label for="agent-mode" style="margin: 0; font-weight: normal;">
-              Enable Agent Mode (Tool Calling)
-            </label>
-          </div>
-          <small style="display: block; margin-bottom: 15px; color: #666;">
-            When enabled, the AI can use tools like web search to answer questions that require current information.
-          </small>
-          
-          <div id="agent-mode-warning" style="display: none; margin-top: 10px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404;">
-            <strong>⚠️ Warning:</strong> Tool calling is not supported with Transformers.js. Only basic semantic search (RAG on current page) is available. Use Ollama, OpenAI, or Custom API for agent mode with tools like web search.
-          </div>
-          
-          <div id="agent-config-group" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
-            <div class="form-group">
-              <label for="max-tool-steps">Max Tool Steps</label>
-              <input 
-                type="number" 
-                id="max-tool-steps" 
-                name="maxToolSteps" 
-                placeholder="3"
-                min="1"
-                max="10"
-              />
-              <small>Maximum number of tool calls per query (default: 3)</small>
-            </div>
-            
-            <div class="form-group">
-              <label for="web-search-provider">Web Search Provider</label>
-              <select id="web-search-provider" name="webSearchProvider">
-                <option value="tavily">Tavily (Recommended)</option>
-                <option value="serper">Serper</option>
-                <option value="google">Google Custom Search</option>
-              </select>
-              <small>Select the search provider for web search tool</small>
-            </div>
-            
-            <div class="form-group">
-              <label for="web-search-api-key">Web Search API Key</label>
-              <input 
-                type="password" 
-                id="web-search-api-key" 
-                name="webSearchApiKey" 
-                placeholder="Enter API key for search provider"
-              />
-              <small>API key required for web search. Get one from <a href="https://tavily.com" target="_blank">Tavily</a>, <a href="https://serper.dev" target="_blank">Serper</a>, or <a href="https://developers.google.com/custom-search" target="_blank">Google</a>.</small>
-            </div>
           </div>
         </div>
         

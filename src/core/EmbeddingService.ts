@@ -447,6 +447,28 @@ export class EmbeddingService {
   }
 
   /**
+   * Get the embedding provider (e.g., 'transformers', 'ollama')
+   * Currently hardcoded to 'transformers' but can be made configurable in the future
+   */
+  getEmbeddingProvider(): string {
+    return 'transformers';
+  }
+
+  /**
+   * Get the embedding model name
+   */
+  getEmbeddingModel(): string {
+    return this.modelName;
+  }
+
+  /**
+   * Get combined embedding key (provider:model) for easy comparison
+   */
+  getEmbeddingKey(): string {
+    return `${this.getEmbeddingProvider()}:${this.getEmbeddingModel()}`;
+  }
+
+  /**
    * Reset singleton (for testing or cleanup)
    */
   static reset(): void {

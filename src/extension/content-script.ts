@@ -15,6 +15,7 @@ import { getLLMConfig, saveLLMConfig } from '../utils/llmContentExtraction';
 import { AgentOrchestrator } from '../core/AgentOrchestrator';
 import { toolRegistry } from '../core/AgentTools';
 import { createWebSearchTool } from '../core/tools/webSearchTool';
+import { createRAGPromptWithHistory, createRAGPromptWithoutHistory } from '../prompts';
 
 // Inject highlight styles
 const style = document.createElement('style');
@@ -381,18 +382,104 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'SEARCH') {
-    if (!rag || !rag.isInitialized()) {
+    // Initialize RAG if not already initialized (lazy initialization)
+    ensureRAGInitialized().then(() => {
+      // Continue with existing search logic
+      handleSearch(message, sender, sendResponse);
+    }).catch((error) => {
+      console.error('[ContentScript] Failed to initialize RAG for search:', error);
       sendResponse({ 
         success: false, 
-        error: 'PageRAG not initialized yet. Please wait...' 
+        error: 'Failed to initialize PageRAG. Please try again.' 
       });
+    });
+    return true; // Async response
+  }
+  
+  if (message.type === 'GET_STATUS') {
+    sendResponse({
+      initialized: rag?.isInitialized() || false,
+      chunkCount: rag?.getChunks().length || 0,
+      isInitializing: isInitializing
+    });
+    return false; // Synchronous response
+  }
+  
+  if (message.type === 'SHOW_SIDEBAR') {
+    // Initialize RAG when user opens sidebar
+    ensureRAGInitialized().then(() => {
+      showSidebar();
+      sendResponse({ success: true });
+    }).catch((error) => {
+      console.error('[ContentScript] Failed to initialize RAG:', error);
+      showSidebar(); // Still show sidebar even if initialization fails
+      sendResponse({ success: true, warning: 'RAG initialization failed' });
+    });
+    return true; // Async response
+  }
+  
+  if (message.type === 'HIDE_SIDEBAR') {
+    hideSidebar();
+    sendResponse({ success: true });
+    return false;
+  }
+  
+  if (message.type === 'TOGGLE_SIDEBAR') {
+    // Initialize RAG when user toggles sidebar (if opening)
+    const isCurrentlyVisible = sidebarContainer && sidebarContainer.classList.contains('visible');
+    if (!isCurrentlyVisible) {
+      // Opening sidebar - initialize RAG
+      ensureRAGInitialized().then(() => {
+        toggleSidebar();
+        sendResponse({ success: true });
+      }).catch((error) => {
+        console.error('[ContentScript] Failed to initialize RAG:', error);
+        toggleSidebar(); // Still toggle sidebar even if initialization fails
+        sendResponse({ success: true, warning: 'RAG initialization failed' });
+      });
+      return true; // Async response
+    } else {
+      // Closing sidebar - no need to initialize
+      toggleSidebar();
+      sendResponse({ success: true });
       return false;
     }
-    
-    // Get sender tab ID for streaming updates
-    const senderTabId = sender.tab?.id;
-    
-    rag.search(message.query, message.options)
+  }
+  
+  if (message.type === 'HIGHLIGHT_RESULT') {
+    if (rag && message.chunkId) {
+      const chunks = rag.getChunks();
+      const chunk = chunks.find((c: any) => c.id === message.chunkId);
+      if (chunk) {
+        highlightAndScrollToChunk(chunk);
+        sendResponse({ success: true, found: true });
+      } else {
+        console.warn('[ContentScript] Chunk not found:', message.chunkId);
+        sendResponse({ success: false, error: 'Chunk not found' });
+      }
+    } else {
+      sendResponse({ success: false, error: 'RAG not initialized or chunkId missing' });
+    }
+    return false;
+  }
+  
+  return false;
+});
+
+// Handle search message (extracted for async initialization)
+async function handleSearch(message: any, sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void): Promise<void> {
+  if (!rag || !rag.isInitialized()) {
+    sendResponse({ 
+      success: false, 
+      error: 'PageRAG initialization failed. Please try again.' 
+    });
+    return;
+  }
+  
+  // Get sender tab ID for streaming updates
+  const senderTabId = sender.tab?.id;
+  
+  rag.search(message.query, message.options)
       .then(async (results: SearchResult[]) => {
         logger.log('[ContentScript] Search returned results:', results.length);
         
@@ -480,21 +567,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Use the same LLM config that's used for content extraction
           const llmConfig = await getLLMConfig().catch(() => null);
           
+          // Ensure llmConfig is available
+          if (!llmConfig) {
+            logger.error('[ContentScript] LLM config not available');
+            sendResponse({ 
+              success: false, 
+              error: 'LLM configuration not available' 
+            });
+            return;
+          }
+          
           // Use the configured provider, or default to transformers
           // This ensures the same config is used for both extraction and search/RAG
-          const provider = llmConfig?.provider || 'transformers';
+          const provider = llmConfig.provider || 'transformers';
+          
+          // Determine agent mode: check mode field first, fallback to agentMode for backward compatibility
+          const mode = llmConfig.mode || (llmConfig.agentMode ? 'online' : 'offline');
+          const agentMode = mode === 'online' || (llmConfig.agentMode ?? false);
+          const useAgentMode = agentMode && provider !== 'transformers';
           
           logger.log('[ContentScript] Using LLM config for search/RAG:', {
+            mode: mode,
             provider,
-            model: llmConfig?.model,
-            apiUrl: llmConfig?.apiUrl,
-            apiKey: llmConfig?.apiKey ? '***' : undefined,
-            timeout: llmConfig?.timeout,
-            agentMode: llmConfig?.agentMode
+            model: llmConfig.model,
+            apiUrl: llmConfig.apiUrl,
+            apiKey: llmConfig.apiKey ? '***' : undefined,
+            timeout: llmConfig.timeout,
+            agentMode: agentMode,
+            webSearchProvider: llmConfig.webSearchProvider,
+            hasWebSearchApiKey: !!llmConfig.webSearchApiKey
           });
           
-          // Check if agent mode is enabled and provider supports it
-          const useAgentMode = llmConfig?.agentMode && provider !== 'transformers';
+          // Warn based on mode
+          if (mode === 'offline') {
+            logger.log('[ContentScript] Offline mode - agent mode and tool calling disabled');
+          } else if (provider === 'transformers') {
+            logger.warn('[ContentScript] ⚠️ Online mode selected but Transformers.js does not support tool calling.');
+            logger.warn('[ContentScript] Use Ollama, OpenAI, OpenRouter, or Custom API for online mode with web search.');
+          } else {
+            logger.log('[ContentScript] Online mode - agent mode and tool calling enabled');
+          }
+          
+          // Log why agent mode is or isn't being used
+          logger.log('[ContentScript] Agent mode check:', {
+            mode: mode,
+            agentModeEnabled: agentMode,
+            provider: provider,
+            providerSupportsToolCalling: provider !== 'transformers',
+            willUseAgentMode: useAgentMode,
+            reason: mode === 'offline'
+              ? 'Offline mode - agent mode disabled'
+              : !agentMode
+                ? 'Agent mode not enabled in config'
+                : provider === 'transformers'
+                  ? 'Transformers.js does not support tool calling'
+                  : 'Online mode - agent mode enabled'
+          });
           
           // For agent mode, we use AI SDK directly, so we don't need LocalModelService
           // For regular mode, we still use LocalModelService
@@ -509,7 +637,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             
             // Set provider-specific options
             if (provider === 'ollama') {
-              llmServiceOptions.ollamaUrl = llmConfig?.apiUrl;
+              // For LocalModelService (regular mode), need full /api/generate path
+              // Normalize user's URL to ensure we have the correct endpoint
+              let ollamaUrl = llmConfig?.apiUrl || 'http://localhost:11434';
+              
+              // Remove any endpoint paths and construct /api/generate
+              ollamaUrl = ollamaUrl
+                .replace(/\/api\/generate$/, '')
+                .replace(/\/api\/chat$/, '')
+                .replace(/\/api\/tags$/, '')
+                .replace(/\/api$/, '')
+                .replace(/\/generate$/, '')
+                .replace(/\/chat$/, '')
+                .replace(/\/$/, '');
+              
+              // Construct full /api/generate path for LocalModelService
+              llmServiceOptions.ollamaUrl = `${ollamaUrl}/api/generate`;
+              
+              logger.log('[ContentScript] LocalModelService Ollama URL:', {
+                original: llmConfig?.apiUrl,
+                normalized: llmServiceOptions.ollamaUrl
+              });
             } else if (provider === 'openai' || provider === 'custom') {
               llmServiceOptions.apiUrl = llmConfig?.apiUrl;
               llmServiceOptions.apiKey = llmConfig?.apiKey;
@@ -529,13 +677,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             logger.log('[ContentScript] Agent mode enabled, using AgentOrchestrator');
             
             // Register web search tool if configured
-            if (llmConfig.webSearchProvider && llmConfig.webSearchApiKey) {
+            // For Ollama provider, prefer Ollama web search if no provider specified
+            const webSearchProvider = (llmConfig.webSearchProvider || (provider === 'ollama' ? 'ollama' : 'ollama')) as any;
+            
+            if (webSearchProvider && llmConfig.webSearchApiKey) {
               const webSearchTool = createWebSearchTool({
-                provider: llmConfig.webSearchProvider,
+                provider: webSearchProvider,
                 apiKey: llmConfig.webSearchApiKey
               });
               toolRegistry.register(webSearchTool);
-              logger.log('[ContentScript] Web search tool registered');
+              logger.log('[ContentScript] Web search tool registered:', {
+                provider: webSearchProvider,
+                hasApiKey: !!llmConfig.webSearchApiKey,
+                toolName: webSearchTool.name,
+                toolDescription: webSearchTool.description.substring(0, 100),
+                note: webSearchProvider === 'ollama' ? 'Using Ollama native web search API' : `Using ${webSearchProvider}`
+              });
+              logger.log('[ContentScript] All registered tools:', toolRegistry.getAll().map(t => ({
+                name: t.name,
+                description: t.description.substring(0, 80)
+              })));
+            } else {
+              // Web search is optional - log info instead of warning
+              logger.log('[ContentScript] Web search tool not configured (optional). Agent will use only page content.');
             }
             
             // Create agent orchestrator with LLM config (uses AI SDK native tool calling)
@@ -549,10 +713,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               content: msg.content
             }));
             
-            // Add page context to query if available
+            // Build page context from RAG results for agent
+            const pageContext = validChunks
+              .map((result: SearchResult, idx: number) => {
+                const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
+                return `[Page Content ${idx + 1}]\n${chunkText}`;
+              })
+              .join('\n\n');
+            
+            logger.log('[ContentScript] Page context prepared for agent, length:', pageContext.length, 'characters');
+            
+            // Pass page context to agent - it will be included in the query
             let agentQuery = message.query;
-            if (context && context.length > 0) {
-              agentQuery = `${message.query}\n\nNote: You also have access to the current page content. If the question is about the current page, use that information. Otherwise, use web search for current information.`;
+            if (pageContext && pageContext.length > 0) {
+              // Include page context in the query so agent knows what's available on the page
+              agentQuery = `Context from the current web page:\n\n${pageContext}\n\nUser question: ${message.query}\n\nIMPORTANT: First check if the answer is in the page context above. Only use web search if the information is NOT available in the page context.`;
             }
             
             // Send tool call notifications to sidebar
@@ -582,7 +757,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
               
               agentResponse = await orchestrator.runStreaming(agentQuery, conversationHistory, {
-                maxSteps: llmConfig.maxToolSteps || 3,
+                maxSteps: (llmConfig?.maxToolSteps || 3),
                 onToolCall: (toolCall) => {
                   logger.log('[ContentScript] Tool call detected:', toolCall.name);
                   sendToolNotification(toolCall.name, 'executing');
@@ -617,7 +792,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             } else {
               // Non-streaming agent mode
               agentResponse = await orchestrator.run(agentQuery, conversationHistory, {
-                maxSteps: llmConfig.maxToolSteps || 3,
+                maxSteps: (llmConfig?.maxToolSteps || 3),
                 onToolCall: (toolCall) => {
                   logger.log('[ContentScript] Tool call detected:', toolCall.name);
                   sendToolNotification(toolCall.name, 'executing');
@@ -634,6 +809,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               answer = agentResponse.message;
             }
             
+            // Fallback: If agent made tool calls but didn't generate a response, create a summary
+            if ((!answer || answer.trim().length === 0) && agentResponse?.toolCalls && agentResponse.toolCalls.length > 0) {
+              logger.warn('[ContentScript] Agent made tool calls but no response generated. Creating fallback summary...');
+              logger.warn('[ContentScript] Tool calls structure:', JSON.stringify(agentResponse.toolCalls.map((tc: any) => ({
+                toolName: tc.toolCall?.name,
+                hasResult: !!tc.result,
+                resultSuccess: tc.result?.success,
+                hasData: !!tc.result?.data
+              })), null, 2));
+              
+              // Extract tool results to create a summary
+              const toolResults: any[] = [];
+              
+              for (const tc of agentResponse.toolCalls) {
+                try {
+                  if (tc.result?.success && tc.result?.data) {
+                    const data = tc.result.data;
+                    const toolName = tc.toolCall?.name || '';
+                    
+                    if (toolName === 'web_search' && data.results && Array.isArray(data.results)) {
+                      // Extract web search results
+                      const searchResults = data.results.slice(0, 3).map((r: any) => ({
+                        title: r.title || 'Untitled',
+                        snippet: r.snippet || r.description || '',
+                        url: r.url || ''
+                      }));
+                      toolResults.push(...searchResults);
+                    }
+                  }
+                } catch (error) {
+                  console.error('[ContentScript] Error extracting tool result:', error);
+                }
+              }
+              
+              if (toolResults.length > 0 && llmService) {
+                try {
+                  // Create a prompt to summarize the tool results
+                  const summaryPrompt = `Based on the following search results, provide a concise answer to the user's question: "${message.query}"
+
+Search Results:
+${toolResults.map((r: any, idx: number) => `${idx + 1}. ${r.title}\n   ${r.snippet}\n   Source: ${r.url}`).join('\n\n')}
+
+Please provide a clear, helpful answer based on these results.`;
+
+                  const service = llmService;
+                  answer = await service.generate(summaryPrompt, {
+                    max_new_tokens: 400,
+                    temperature: 0.4,
+                    top_p: 0.9
+                  });
+                  
+                  logger.log('[ContentScript] Fallback summary generated, length:', answer?.length || 0);
+                } catch (error) {
+                  console.error('[ContentScript] Failed to generate fallback summary:', error);
+                  logger.warn('[ContentScript] Will show tool results only without summary');
+                }
+              } else {
+                logger.warn('[ContentScript] Could not create fallback summary:', {
+                  hasToolResults: toolResults.length > 0,
+                  hasLLMService: !!llmService
+                });
+              }
+            }
+            
             if (answer) {
               logger.log('[ContentScript] Agent response generated, length:', answer.length, 'characters');
             }
@@ -647,6 +886,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Regular mode (non-agent) or fallback from unsupported agent mode
             logger.log('[ContentScript] Regular mode, using direct LLM call');
             
+            // Warn if agent mode could be useful but isn't enabled
+            const queryLower = message.query.toLowerCase();
+            const timeSensitiveKeywords = ['latest', 'recent', 'current', 'today', 'now', 'new', 'news', 'update', 'change'];
+            const mightNeedToolCalling = timeSensitiveKeywords.some(keyword => queryLower.includes(keyword));
+            
+            if (mightNeedToolCalling && !llmConfig?.agentMode) {
+              logger.warn('[ContentScript] ⚠️ Query appears to need current information but agent mode is disabled.');
+              logger.warn('[ContentScript] Enable agent mode in settings to use web search for latest information.');
+              console.warn('[PageRAG] 💡 Tip: Your query mentions time-sensitive terms. Enable "Agent Mode" in settings to use web search for latest information.');
+            }
+            
             if (!llmService) {
               logger.error('[ContentScript] LLM service not initialized for regular mode');
               sendResponse({ 
@@ -659,41 +909,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // TypeScript: llmService is guaranteed to be non-null after the check above
             const service = llmService;
             
-            // Build prompt with conversation history if available
-            // Enhanced prompt to encourage detailed, comprehensive answers
-            let prompt = '';
-            
-            // Add conversation history context (last 5-10 messages)
-            // Simplified prompt format optimized for T5/Flan models
-            if (message.conversationHistory && message.conversationHistory.length > 0) {
-              const recentHistory = message.conversationHistory.slice(-10);
-              const historyText = recentHistory
-                .map((msg: { role: string; content: string }) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-                .join('\n');
-              
-              // Simplified prompt for T5 models - more direct and less verbose
-              prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
-
-Previous conversation:
-${historyText}
-
-Question: ${message.query}
-
-Context:
-${context}
-
-Answer:`;
-            } else {
-              // No conversation history - simplified prompt for T5
-              prompt = `Based on the context below, answer the question. Provide a detailed answer. If the answer is not in the context, say "I cannot find this information in the provided context."
-
-Question: ${message.query}
-
-Context:
-${context}
-
-Answer:`;
-            }
+            // Build prompt using centralized prompt functions
+            const prompt = message.conversationHistory && message.conversationHistory.length > 0
+              ? createRAGPromptWithHistory({
+                  query: message.query,
+                  context,
+                  conversationHistory: message.conversationHistory
+                })
+              : createRAGPromptWithoutHistory({
+                  query: message.query,
+                  context
+                });
             
             // Log the prompt for debugging
             logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
@@ -782,57 +1008,9 @@ Answer:`;
         const errorMessage = error instanceof Error ? error.message : String(error);
         sendResponse({ success: false, error: errorMessage });
       });
-    return true; // Async response
-  }
-  
-  if (message.type === 'GET_STATUS') {
-    sendResponse({
-      initialized: rag?.isInitialized() || false,
-      chunkCount: rag?.getChunks().length || 0,
-      isInitializing: isInitializing
-    });
-    return false; // Synchronous response
-  }
-  
-  if (message.type === 'SHOW_SIDEBAR') {
-    showSidebar();
-    sendResponse({ success: true });
-    return false;
-  }
-  
-  if (message.type === 'HIDE_SIDEBAR') {
-    hideSidebar();
-    sendResponse({ success: true });
-    return false;
-  }
-  
-  if (message.type === 'TOGGLE_SIDEBAR') {
-    toggleSidebar();
-    sendResponse({ success: true });
-    return false;
-  }
-  
-  if (message.type === 'HIGHLIGHT_RESULT') {
-    if (rag && message.chunkId) {
-      const chunks = rag.getChunks();
-      const chunk = chunks.find((c: any) => c.id === message.chunkId);
-      if (chunk) {
-        highlightAndScrollToChunk(chunk);
-        sendResponse({ success: true, found: true });
-      } else {
-        console.warn('[ContentScript] Chunk not found:', message.chunkId);
-        sendResponse({ success: false, error: 'Chunk not found' });
-      }
-    } else {
-      sendResponse({ success: false, error: 'RAG not initialized or chunkId missing' });
-    }
-    return false;
-  }
-  
-  return false;
-});
+}
 
-// Initialize on page load
+// Initialize RAG (internal function)
 async function initRAG() {
   if (isInitializing) {
     logger.log('[PageRAG] Already initializing, skipping...');
@@ -871,38 +1049,45 @@ async function initRAG() {
   }
 }
 
-// Wait for DOM to be ready
+// Ensure RAG is initialized (called when user explicitly interacts with plugin)
+async function ensureRAGInitialized(): Promise<void> {
+  if (rag && rag.isInitialized()) {
+    // Check if URL changed (SPA navigation)
+    const currentUrl = window.location.href;
+    const ragUrl = (rag as any).url;
+    if (ragUrl === currentUrl) {
+      logger.log('[PageRAG] Already initialized for this URL');
+      return;
+    } else {
+      logger.log('[PageRAG] URL changed, resetting...');
+      rag = null;
+    }
+  }
+  
+  if (!rag || !rag.isInitialized()) {
+    await initRAG();
+  }
+}
+
+// Wait for DOM to be ready - only restore sidebar state, don't auto-initialize RAG
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    logger.log('[PageRAG] DOM loaded, initializing...');
-    initRAG();
     restoreSidebarState();
   });
 } else {
-  logger.log('[PageRAG] DOM already ready, initializing...');
-  initRAG();
   restoreSidebarState();
 }
 
-// Re-initialize on SPA navigation (with debounce)
+// Track URL changes and reset RAG instance, but don't auto-initialize
 let lastUrl = location.href;
-let navigationTimeout: NodeJS.Timeout | null = null;
 
 new MutationObserver(() => {
   const url = location.href;
   if (url !== lastUrl) {
     lastUrl = url;
-    
-    // Debounce navigation detection
-    if (navigationTimeout) {
-      clearTimeout(navigationTimeout);
-    }
-    
-    navigationTimeout = setTimeout(() => {
-      logger.log('[PageRAG] URL changed, re-initializing...');
-      rag = null;
-      initRAG();
-    }, 500);
+    logger.log('[PageRAG] URL changed, resetting RAG instance (will initialize on user action)');
+    rag = null; // Reset but don't initialize
+    isInitializing = false; // Reset initialization flag
   }
 }).observe(document, { subtree: true, childList: true });
 
@@ -1068,6 +1253,9 @@ function createSidebar(): HTMLDivElement {
 }
 
 async function showSidebar(): Promise<void> {
+  // Initialize RAG when user opens sidebar
+  await ensureRAGInitialized();
+  
   // First, check if there are any duplicate sidebars and remove them
   const allSidebars = document.querySelectorAll('#rag-sidebar-container');
   if (allSidebars.length > 1) {
@@ -1279,13 +1467,7 @@ function scrollAndHighlight(element: HTMLElement): void {
         }
         return null;
       }
-    };
-    
-    console.log('%c💡 LLM Config Helpers Available', 'color: #667eea; font-weight: bold; font-size: 14px;');
-    console.log('  - configureLLMExtraction(config) - Configure LLM settings');
-    console.log('  - getLLMConfig() - Get current LLM config');
-    console.log('');
-    console.log('Example: await configureLLMExtraction({ provider: "ollama", model: "qwen3:8b", apiUrl: "http://localhost:11434/api/generate" })');
+    };    
   } catch (error) {
     console.error('Failed to load LLM config helpers:', error);
   }
