@@ -1,11 +1,12 @@
 /**
  * Agent Orchestrator
- * Manages agent loop with tool calling support
+ * Manages agent loop with tool calling support using AI SDK native tool calling
  */
 
-import { LocalModelService } from './LocalModelService';
-import { ToolRegistry, type ToolCall, type ToolResult } from './AgentTools';
-import { parseToolCall, hasToolCall } from './toolCallParser';
+import { generateText, streamText } from 'ai';
+import { ToolRegistry, type ToolCall, type ToolResult, convertToolsToAISDK } from './AgentTools';
+import { createAISDKModel, convertLLMConfigToAISDKConfig } from './AISDKProvider';
+import type { LLMConfig } from '../utils/llmContentExtraction';
 
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'system';
@@ -26,156 +27,185 @@ export interface AgentResponse {
 }
 
 /**
- * Create system prompt with tool definitions
- */
-function createSystemPrompt(toolRegistry: ToolRegistry): string {
-  const toolDefinitions = toolRegistry.getToolDefinitions();
-  
-  return `You are a helpful AI assistant that can use tools to help answer questions.
-
-Available Tools:
-${toolDefinitions}
-
-Instructions:
-1. When you need to use a tool, respond with a JSON object in this format:
-   {"tool": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
-
-2. Only use tools when necessary. For questions about the current page content, use your knowledge directly.
-
-3. After receiving tool results, synthesize them into a clear, helpful answer.
-
-4. You can make multiple tool calls if needed, but be efficient.
-
-5. Always provide a final answer after using tools.
-
-Example tool call:
-{"tool": "web_search", "arguments": {"query": "current weather in San Francisco"}}
-
-Now, how can I help you?`;
-}
-
-/**
- * Format tool results for LLM context
- */
-function formatToolResults(toolCalls: Array<{ toolCall: ToolCall; result: ToolResult }>): string {
-  const formatted = toolCalls.map(({ toolCall, result }) => {
-    if (result.success) {
-      return `Tool "${toolCall.name}" executed successfully:
-${JSON.stringify(result.data, null, 2)}`;
-    } else {
-      return `Tool "${toolCall.name}" failed: ${result.error}`;
-    }
-  }).join('\n\n');
-  
-  return `Tool Execution Results:\n${formatted}\n\nPlease provide a helpful answer based on these results.`;
-}
-
-/**
- * Agent Orchestrator class
+ * Agent Orchestrator class using AI SDK native tool calling
  */
 export class AgentOrchestrator {
-  private llmService: LocalModelService;
+  private model: any | null | undefined = undefined; // AI SDK LanguageModel (type varies by provider)
+  private aiSdkConfig: any; // Store config for initialization
   private toolRegistry: ToolRegistry;
   private maxSteps: number;
+  private fallbackToManual: boolean = false; // Fallback for Transformers.js
 
   constructor(
-    llmService: LocalModelService,
+    llmConfig: LLMConfig,
     toolRegistry: ToolRegistry,
     options: { maxSteps?: number } = {}
   ) {
-    this.llmService = llmService;
+    // Convert LLM config to AI SDK config
+    this.aiSdkConfig = convertLLMConfigToAISDKConfig(llmConfig);
     this.toolRegistry = toolRegistry;
     this.maxSteps = options.maxSteps || 3;
+    // Check if provider is transformers (doesn't support tool calling)
+    this.fallbackToManual = this.aiSdkConfig.provider === 'transformers';
   }
 
   /**
-   * Run agent with tool calling support
+   * Initialize model (now synchronous since we use static imports)
+   */
+  private ensureModel(): void {
+    if (this.model !== undefined) {
+      return; // Already initialized
+    }
+
+    // Create model synchronously (no longer async)
+    this.model = createAISDKModel(this.aiSdkConfig);
+    
+    // Check if model is null (Transformers.js case)
+    if (this.model === null) {
+      this.fallbackToManual = true;
+    }
+  }
+
+  /**
+   * Run agent with tool calling support using AI SDK
    */
   async run(
     query: string,
     conversationHistory: AgentMessage[] = [],
     options: AgentOptions = {}
   ): Promise<AgentResponse> {
-    const systemPrompt = createSystemPrompt(this.toolRegistry);
-    const maxSteps = options.maxSteps || this.maxSteps;
-    const toolCalls: Array<{ toolCall: ToolCall; result: ToolResult }> = [];
-    
-    let currentQuery = query;
-    let step = 0;
-    let finalResponse = '';
+    // Initialize model if needed
+    this.ensureModel();
 
-    while (step < maxSteps) {
-      step++;
-      
-      if (options.onStep) {
-        options.onStep(step, step === 1 ? 'Analyzing query...' : 'Processing tool results...');
-      }
-
-      // Build prompt with conversation history and tool results
-      let prompt = systemPrompt;
-      
-      // Add conversation history
-      if (conversationHistory.length > 0) {
-        const historyText = conversationHistory
-          .slice(-5) // Last 5 messages for context
-          .map(msg => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-          .join('\n');
-        prompt += `\n\nConversation History:\n${historyText}\n`;
-      }
-      
-      // Add tool results if any
-      if (toolCalls.length > 0) {
-        prompt += `\n\n${formatToolResults(toolCalls)}\n\n`;
-      }
-      
-      // Add current query
-      prompt += `\n\nUser: ${currentQuery}\nAssistant:`;
-
-      // Call LLM
-      const response = await this.llmService.generate(prompt, {
-        max_new_tokens: 800,
-        temperature: 0.4,
-        top_p: 0.9
-      });
-
-      // Check if response contains a tool call
-      if (hasToolCall(response)) {
-        const toolCall = parseToolCall(response);
-        
-        if (toolCall) {
-          if (options.onToolCall) {
-            options.onToolCall(toolCall);
-          }
-
-          // Execute tool
-          const result = await this.toolRegistry.executeToolCall(toolCall);
-          
-          toolCalls.push({ toolCall, result });
-          
-          if (options.onToolResult) {
-            options.onToolResult(toolCall, result);
-          }
-
-          // Continue loop with tool results
-          currentQuery = `Based on the tool results, provide a helpful answer to: ${query}`;
-          continue;
-        }
-      }
-
-      // No tool call detected, this is the final response
-      finalResponse = response;
-      break;
+    // Fallback to manual mode for Transformers.js
+    if (this.fallbackToManual || !this.model) {
+      throw new Error('Native tool calling not supported. Use a provider that supports tool calling (Ollama, OpenAI, or Custom API).');
     }
 
+    const maxSteps = options.maxSteps || this.maxSteps;
+    
+    // Convert tools to AI SDK format
+    const tools = convertToolsToAISDK(this.toolRegistry);
+    
+    // Convert conversation history to AI SDK format
+    const messages = conversationHistory.map(msg => ({
+      role: msg.role as 'user' | 'assistant' | 'system',
+      content: msg.content
+    }));
+
+    // Add current query as user message
+    messages.push({
+      role: 'user',
+      content: query
+    });
+
+    if (options.onStep) {
+      options.onStep(1, 'Analyzing query...');
+    }
+
+    // Track tool calls and results
+    const trackedToolCalls: Array<{ toolCall: ToolCall; result: ToolResult }> = [];
+
+    // Use AI SDK generateText with tools
+    const result = await generateText({
+      model: this.model,
+      messages: messages,
+      tools: tools,
+      maxSteps: maxSteps,
+      onStepFinish: (stepResult: any) => {
+        // Handle tool calls and results from step result
+        if (stepResult.toolCalls && stepResult.toolCalls.length > 0) {
+          stepResult.toolCalls.forEach((toolCall: any) => {
+            const ourToolCall: ToolCall = {
+              name: toolCall.toolName,
+              arguments: toolCall.args,
+              id: toolCall.toolCallId
+            };
+            
+            if (options.onToolCall) {
+              options.onToolCall(ourToolCall);
+            }
+          });
+        }
+
+        if (stepResult.toolResults && stepResult.toolResults.length > 0) {
+          stepResult.toolResults.forEach((toolResult: any, index: number) => {
+            if (stepResult.toolCalls && stepResult.toolCalls[index]) {
+              const toolCall = stepResult.toolCalls[index];
+              const ourToolCall: ToolCall = {
+                name: toolCall.toolName,
+                arguments: toolCall.args,
+                id: toolCall.toolCallId
+              };
+              
+              const ourResult: ToolResult = {
+                success: !toolResult.error,
+                data: toolResult.result,
+                error: toolResult.error
+              };
+              
+              if (options.onToolResult) {
+                options.onToolResult(ourToolCall, ourResult);
+              }
+              
+              trackedToolCalls.push({ toolCall: ourToolCall, result: ourResult });
+            }
+          });
+        }
+
+        if (options.onStep) {
+          const stepType = stepResult.stepType || 'unknown';
+          const message = stepResult.toolCalls && stepResult.toolCalls.length > 0 
+            ? 'Processing tool results...' 
+            : 'Generating response...';
+          options.onStep(trackedToolCalls.length + 1, message);
+        }
+      }
+    });
+
+    // Extract tool calls from result steps if available
+    if (result.steps) {
+      const steps = await result.steps;
+      for (const step of steps) {
+        if (step.toolCalls && step.toolCalls.length > 0) {
+          for (const toolCall of step.toolCalls) {
+            const ourToolCall: ToolCall = {
+              name: toolCall.toolName,
+              arguments: toolCall.args,
+              id: toolCall.toolCallId
+            };
+            
+            // Find corresponding result
+            if (step.toolResults) {
+              const toolResult = step.toolResults.find((tr: any) => tr.toolCallId === toolCall.toolCallId);
+              if (toolResult) {
+                const ourResult: ToolResult = {
+                  success: !(toolResult as any).error,
+                  data: (toolResult as any).result,
+                  error: (toolResult as any).error
+                };
+                // Only add if not already tracked
+                if (!trackedToolCalls.find(tc => tc.toolCall.id === ourToolCall.id)) {
+                  trackedToolCalls.push({ toolCall: ourToolCall, result: ourResult });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const steps = result.steps ? await result.steps : [];
+    
     return {
-      message: finalResponse || 'I apologize, but I was unable to generate a response after multiple attempts.',
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      steps: step
+      message: result.text,
+      toolCalls: trackedToolCalls.length > 0 ? trackedToolCalls : undefined,
+      steps: steps.length || 1
     };
   }
 
   /**
-   * Run agent with streaming support
+   * Run agent with streaming support using AI SDK
    */
   async runStreaming(
     query: string,
@@ -184,82 +214,111 @@ export class AgentOrchestrator {
       onChunk?: (chunk: string) => void;
     } = {}
   ): Promise<AgentResponse> {
-    const systemPrompt = createSystemPrompt(this.toolRegistry);
-    const maxSteps = options.maxSteps || this.maxSteps;
-    const toolCalls: Array<{ toolCall: ToolCall; result: ToolResult }> = [];
-    
-    let currentQuery = query;
-    let step = 0;
-    let finalResponse = '';
-    let accumulatedResponse = '';
+    // Initialize model if needed
+    this.ensureModel();
 
-    while (step < maxSteps) {
-      step++;
-      
-      if (options.onStep) {
-        options.onStep(step, step === 1 ? 'Analyzing query...' : 'Processing tool results...');
-      }
-
-      // Build prompt
-      let prompt = systemPrompt;
-      
-      if (conversationHistory.length > 0) {
-        const historyText = conversationHistory
-          .slice(-5)
-          .map(msg => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-          .join('\n');
-        prompt += `\n\nConversation History:\n${historyText}\n`;
-      }
-      
-      if (toolCalls.length > 0) {
-        prompt += `\n\n${formatToolResults(toolCalls)}\n\n`;
-      }
-      
-      prompt += `\n\nUser: ${currentQuery}\nAssistant:`;
-
-      // Call LLM with streaming
-      accumulatedResponse = '';
-      const response = await this.llmService.generate(prompt, {
-        max_new_tokens: 800,
-        temperature: 0.4,
-        top_p: 0.9,
-        onChunk: (chunk: string) => {
-          accumulatedResponse += chunk;
-          if (options.onChunk) {
-            options.onChunk(chunk);
-          }
-        }
-      });
-
-      // Check for tool call in accumulated response
-      if (hasToolCall(accumulatedResponse)) {
-        const toolCall = parseToolCall(accumulatedResponse);
-        
-        if (toolCall) {
-          if (options.onToolCall) {
-            options.onToolCall(toolCall);
-          }
-
-          const result = await this.toolRegistry.executeToolCall(toolCall);
-          toolCalls.push({ toolCall, result });
-          
-          if (options.onToolResult) {
-            options.onToolResult(toolCall, result);
-          }
-
-          currentQuery = `Based on the tool results, provide a helpful answer to: ${query}`;
-          continue;
-        }
-      }
-
-      finalResponse = accumulatedResponse || response;
-      break;
+    // Fallback to manual mode for Transformers.js
+    if (this.fallbackToManual || !this.model) {
+      throw new Error('Native tool calling not supported. Use a provider that supports tool calling (Ollama, OpenAI, or Custom API).');
     }
 
+    const maxSteps = options.maxSteps || this.maxSteps;
+    
+    // Convert tools to AI SDK format
+    const tools = convertToolsToAISDK(this.toolRegistry);
+    
+    // Convert conversation history to AI SDK format
+    const messages = conversationHistory.map(msg => ({
+      role: msg.role as 'user' | 'assistant' | 'system',
+      content: msg.content
+    }));
+
+    // Add current query as user message
+    messages.push({
+      role: 'user',
+      content: query
+    });
+
+    if (options.onStep) {
+      options.onStep(1, 'Analyzing query...');
+    }
+
+    let accumulatedText = '';
+    const trackedToolCalls: Array<{ toolCall: ToolCall; result: ToolResult }> = [];
+
+    // Use AI SDK streamText with tools
+    const result = await streamText({
+      model: this.model,
+      messages: messages,
+      tools: tools,
+      maxSteps: maxSteps,
+      onStepFinish: (stepResult: any) => {
+        // Track tool calls and results from step result
+        if (stepResult.toolCalls && stepResult.toolCalls.length > 0) {
+          stepResult.toolCalls.forEach((toolCall: any) => {
+            const ourToolCall: ToolCall = {
+              name: toolCall.toolName,
+              arguments: toolCall.args,
+              id: toolCall.toolCallId
+            };
+            
+            if (options.onToolCall) {
+              options.onToolCall(ourToolCall);
+            }
+          });
+        }
+
+        if (stepResult.toolResults && stepResult.toolResults.length > 0) {
+          stepResult.toolCalls?.forEach((toolCall: any, index: number) => {
+            if (stepResult.toolResults[index]) {
+              const ourToolCall: ToolCall = {
+                name: toolCall.toolName,
+                arguments: toolCall.args,
+                id: toolCall.toolCallId
+              };
+              
+              const toolResult = stepResult.toolResults[index];
+              const ourResult: ToolResult = {
+                success: !toolResult.error,
+                data: toolResult.result,
+                error: toolResult.error
+              };
+              
+              if (options.onToolResult) {
+                options.onToolResult(ourToolCall, ourResult);
+              }
+              
+              // Store for final response
+              trackedToolCalls.push({ toolCall: ourToolCall, result: ourResult });
+            }
+          });
+        }
+
+        if (options.onStep) {
+          const stepType = stepResult.stepType || 'unknown';
+          const message = stepResult.toolCalls && stepResult.toolCalls.length > 0 
+            ? 'Processing tool results...' 
+            : 'Generating response...';
+          options.onStep(trackedToolCalls.length + 1, message);
+        }
+      }
+    });
+
+    // Stream the response
+    for await (const chunk of result.textStream) {
+      accumulatedText += chunk;
+      if (options.onChunk) {
+        options.onChunk(chunk);
+      }
+    }
+
+    // Get steps count
+    const steps = result.steps ? await result.steps : [];
+
     return {
-      message: finalResponse || 'I apologize, but I was unable to generate a response after multiple attempts.',
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      steps: step
+      message: accumulatedText,
+      toolCalls: trackedToolCalls.length > 0 ? trackedToolCalls : undefined,
+      steps: steps.length || 1
     };
   }
 }

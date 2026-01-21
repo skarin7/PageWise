@@ -2,7 +2,12 @@
  * LLM-based content extraction (Crawl4AI-style)
  * Uses LLM to intelligently identify main content area
  * Supports local models (Ollama) and remote APIs
+ * 
+ * Note: Using static imports to avoid CSP issues with chunk loading
  */
+
+import { LocalModelService } from '../core/LocalModelService';
+import { getPersistentStorage } from './persistentStorage';
 
 export interface LLMConfig {
   enabled: boolean;
@@ -119,7 +124,6 @@ CSS Selector:`;
  * Call Transformers.js local model
  */
 async function callTransformersAPI(config: LLMConfig, prompt: string): Promise<string> {
-  const { LocalModelService } = await import('../core/LocalModelService');
   const modelName = config.model || 'Xenova/LaMini-Flan-T5-783M';
   
   try {
@@ -568,7 +572,6 @@ export async function getLLMConfig(): Promise<LLMConfig> {
   
   // Try persistent storage as fallback (for settings that survive uninstall)
   try {
-    const { getPersistentStorage } = await import('./persistentStorage');
     const storage = getPersistentStorage();
     const persistentPrefs = await storage.loadPreferences();
     if (persistentPrefs?.llmConfig) {
@@ -618,7 +621,6 @@ export async function saveLLMConfig(config: LLMConfig, persistAfterUninstall: bo
   // Optionally save to persistent storage (survives uninstall)
   if (persistAfterUninstall) {
     try {
-      const { getPersistentStorage } = await import('./persistentStorage');
       const storage = getPersistentStorage();
       await storage.savePreferences({ llmConfig: configToSave });
       console.log('[LLMContentExtraction] Config saved to persistent storage');

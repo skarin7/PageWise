@@ -759,6 +759,17 @@
   </div>
   
   <div class="chat-container" id="messages-container">
+    <div id="transformers-info-banner" style="display: none; margin: 10px; padding: 12px; background-color: #e3f2fd; border: 1px solid #2196f3; border-radius: 4px; color: #1565c0; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="flex: 1;">
+          <strong>ℹ️ Using Transformers.js</strong>
+          <div style="margin-top: 6px;">
+            Basic semantic search only. Enable Ollama, OpenAI, or Custom API in settings for agent mode with web search and tool calling.
+          </div>
+        </div>
+        <button id="dismiss-info-banner" style="background: none; border: none; color: #1565c0; cursor: pointer; font-size: 18px; padding: 0; margin-left: 10px; line-height: 1;">×</button>
+      </div>
+    </div>
     <div class="empty-state">
       <div class="empty-state-icon">💬</div>
       <p>Start a conversation by asking a question about this page</p>
@@ -864,6 +875,10 @@
           <small style="display: block; margin-bottom: 15px; color: #666;">
             When enabled, the AI can use tools like web search to answer questions that require current information.
           </small>
+          
+          <div id="agent-mode-warning" style="display: none; margin-top: 10px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404;">
+            <strong>⚠️ Warning:</strong> Tool calling is not supported with Transformers.js. Only basic semantic search (RAG on current page) is available. Use Ollama, OpenAI, or Custom API for agent mode with tools like web search.
+          </div>
           
           <div id="agent-config-group" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
             <div class="form-group">

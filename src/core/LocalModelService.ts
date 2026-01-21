@@ -1,11 +1,15 @@
 /**
  * Local Model Service - Transformers.js text generation for content extraction
  * Uses the same WASM/WebGL infrastructure as EmbeddingService
+ * 
+ * Note: Using static import instead of dynamic import to avoid CSP issues
+ * with chunk loading in browser extensions.
  */
 
 import { pipeline, env } from '@xenova/transformers';
 
 // Configure Transformers.js for browser extension
+// Disable local models, use remote from HuggingFace
 env.allowLocalModels = false;
 
 export type LocalModelProvider = 'transformers' | 'ollama' | 'openai' | 'custom';

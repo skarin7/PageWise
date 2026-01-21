@@ -182,6 +182,9 @@ async function loadSettings() {
     // Update visibility and fetch models
     updateProviderConfigVisibility();
     
+    // Update Transformers.js info banner
+    updateTransformersInfoBanner();
+    
     // Wait a bit for the dropdown to be populated, then set the saved model
     if (config?.model && modelSelect) {
       setTimeout(() => {
@@ -216,6 +219,45 @@ async function loadSettings() {
 function updateAgentConfigVisibility() {
   if (agentConfigGroup && agentModeCheckbox) {
     agentConfigGroup.style.display = agentModeCheckbox.checked ? 'block' : 'none';
+  }
+  
+  // Show warning if Transformers.js is selected with agent mode enabled
+  if (agentModeWarning && agentModeCheckbox && providerSelect) {
+    const isTransformers = providerSelect.value === 'transformers';
+    const isAgentModeEnabled = agentModeCheckbox.checked;
+    
+    if (isTransformers && isAgentModeEnabled) {
+      agentModeWarning.style.display = 'block';
+    } else {
+      agentModeWarning.style.display = 'none';
+    }
+  }
+}
+
+async function updateTransformersInfoBanner() {
+  const transformersInfoBanner = document.getElementById('transformers-info-banner');
+  if (!transformersInfoBanner) return;
+  
+  // Check if user dismissed the banner
+  const dismissed = localStorage.getItem('transformers-info-banner-dismissed') === 'true';
+  if (dismissed) {
+    transformersInfoBanner.style.display = 'none';
+    return;
+  }
+  
+  // Check current provider
+  try {
+    const config = await getLLMConfigFn();
+    const provider = config?.provider || 'transformers';
+    
+    if (provider === 'transformers') {
+      transformersInfoBanner.style.display = 'block';
+    } else {
+      transformersInfoBanner.style.display = 'none';
+    }
+  } catch (error) {
+    // Default to showing if we can't determine provider
+    transformersInfoBanner.style.display = 'block';
   }
 }
 
@@ -428,18 +470,28 @@ async function saveSettings() {
     
     // Add agent mode settings
     if (agentModeCheckbox) {
-      config.agentMode = agentModeCheckbox.checked;
+      const requestedAgentMode = agentModeCheckbox.checked;
       
-      if (config.agentMode) {
-        config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
-        config.webSearchProvider = webSearchProviderSelect?.value || 'tavily';
+      // Auto-disable agent mode for Transformers.js
+      if (provider === 'transformers' && requestedAgentMode) {
+        config.agentMode = false;
+        agentModeCheckbox.checked = false;
+        updateAgentConfigVisibility();
+        alert('⚠️ Agent mode is not supported with Transformers.js. Only basic semantic search is available. Please use Ollama, OpenAI, or Custom API for agent mode with tool calling.');
+      } else {
+        config.agentMode = requestedAgentMode;
         
-        const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
-        if (webSearchApiKey) {
-          config.webSearchApiKey = webSearchApiKey;
-        } else {
-          // Warn but don't block - user might add API key later
-          console.warn('Agent mode enabled but no web search API key provided');
+        if (config.agentMode) {
+          config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
+          config.webSearchProvider = webSearchProviderSelect?.value || 'tavily';
+          
+          const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
+          if (webSearchApiKey) {
+            config.webSearchApiKey = webSearchApiKey;
+          } else {
+            // Warn but don't block - user might add API key later
+            console.warn('Agent mode enabled but no web search API key provided');
+          }
         }
       }
     }
@@ -570,6 +622,7 @@ const modelStatus = document.getElementById('model-status') as HTMLElement;
 const timeoutInput = document.getElementById('timeout') as HTMLInputElement;
 const agentModeCheckbox = document.getElementById('agent-mode') as HTMLInputElement;
 const agentConfigGroup = document.getElementById('agent-config-group') as HTMLDivElement;
+const agentModeWarning = document.getElementById('agent-mode-warning') as HTMLDivElement;
 const maxToolStepsInput = document.getElementById('max-tool-steps') as HTMLInputElement;
 const webSearchProviderSelect = document.getElementById('web-search-provider') as HTMLSelectElement;
 const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
@@ -694,6 +747,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (providerSelect) {
     providerSelect.addEventListener('change', () => {
       updateProviderConfigVisibility();
+      updateAgentConfigVisibility(); // Also update agent warning when provider changes
+      updateTransformersInfoBanner(); // Update info banner when provider changes
     });
   }
   
@@ -804,6 +859,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load current settings
   loadSettings();
+  
+  // Show/hide Transformers.js info banner
+  updateTransformersInfoBanner();
+  
+  // Dismiss info banner button
+  const dismissInfoBanner = document.getElementById('dismiss-info-banner');
+  const transformersInfoBanner = document.getElementById('transformers-info-banner');
+  if (dismissInfoBanner && transformersInfoBanner) {
+    dismissInfoBanner.addEventListener('click', () => {
+      transformersInfoBanner.style.display = 'none';
+      // Remember dismissal in localStorage
+      localStorage.setItem('transformers-info-banner-dismissed', 'true');
+    });
+  }
 
   // Search button
   searchButton.addEventListener('click', handleSearch);

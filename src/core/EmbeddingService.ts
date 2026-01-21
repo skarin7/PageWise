@@ -1,5 +1,8 @@
 /**
  * Embedding Service - Transformers.js integration
+ * 
+ * Note: Using static import instead of dynamic import to avoid CSP issues
+ * with chunk loading in browser extensions.
  */
 
 import { pipeline, env } from '@xenova/transformers';

@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { tool } from 'ai';
 
 /**
  * Tool execution result
@@ -122,3 +123,27 @@ ${params}`;
 
 // Global tool registry instance
 export const toolRegistry = new ToolRegistry();
+
+/**
+ * Convert ToolRegistry tools to AI SDK format
+ */
+export function convertToolsToAISDK(toolRegistry: ToolRegistry): Record<string, any> {
+  const aiSdkTools: Record<string, any> = {};
+  
+  for (const toolDef of toolRegistry.getAll()) {
+    aiSdkTools[toolDef.name] = tool({
+      description: toolDef.description,
+      parameters: toolDef.parameters,
+      execute: async (args: any) => {
+        const result = await toolDef.execute(args);
+        if (result.success) {
+          return result.data;
+        } else {
+          throw new Error(result.error || 'Tool execution failed');
+        }
+      }
+    });
+  }
+  
+  return aiSdkTools;
+}

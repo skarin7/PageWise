@@ -37,7 +37,7 @@
   "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["worker.js", "sidebar.html"],
+      "resources": ["worker.js", "sidebar.html", "*.js"],
       "matches": ["<all_urls>"]
     }
   ],

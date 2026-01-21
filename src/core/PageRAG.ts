@@ -1,10 +1,14 @@
 /**
  * PageRAG - Main orchestrator for the RAG system
+ * 
+ * Note: Using static imports instead of dynamic imports to avoid CSP issues
+ * with chunk loading in browser extensions.
  */
 
 import { DomChunker } from './DomChunker';
 import { EmbeddingService } from './EmbeddingService';
 import { VectorStore } from './VectorStore';
+import { saveLLMConfig, getLLMConfig } from '../utils/llmContentExtraction';
 import type { Chunk, SearchResult, SearchOptions } from '../types';
 
 export class PageRAG {
@@ -143,7 +147,7 @@ export class PageRAG {
       const results = await this.vectorStore.search(query, options);
       
       // Add highlight elements to results
-      return results.map(result => {
+      return results.map((result: SearchResult) => {
         const element = this.getElementFromChunk(result.chunk);
         return {
           ...result,
@@ -289,12 +293,10 @@ if (typeof window !== 'undefined') {
   };
   // Export LLM config helpers
   (window as any).configureLLMExtraction = async (config: any) => {
-    const { saveLLMConfig } = await import('../utils/llmContentExtraction');
     await saveLLMConfig(config);
     console.log('LLM config saved. Reload page to apply.');
   };
   (window as any).getLLMConfig = async () => {
-    const { getLLMConfig } = await import('../utils/llmContentExtraction');
     return await getLLMConfig();
   };
 }

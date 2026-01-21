@@ -1,13 +1,20 @@
 /**
  * Content Script - Runs on every page
+ * 
+ * Note: Using static imports instead of dynamic imports to avoid CSP issues
+ * with chunk loading in browser extensions. This increases initial bundle size
+ * but ensures compatibility with Content Security Policy.
  */
 
-import { PageRAG } from '../core/PageRAG';
 import { logger } from '../utils/logger';
-import { LocalModelService } from '../core/LocalModelService';
-import { getLLMConfig } from '../utils/llmContentExtraction';
-import { EmbeddingService } from '../core/EmbeddingService';
 import type { SearchResult } from '../types';
+import { PageRAG } from '../core/PageRAG';
+import { LocalModelService } from '../core/LocalModelService';
+import { EmbeddingService } from '../core/EmbeddingService';
+import { getLLMConfig, saveLLMConfig } from '../utils/llmContentExtraction';
+import { AgentOrchestrator } from '../core/AgentOrchestrator';
+import { toolRegistry } from '../core/AgentTools';
+import { createWebSearchTool } from '../core/tools/webSearchTool';
 
 // Inject highlight styles
 const style = document.createElement('style');
@@ -130,7 +137,7 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-let rag: PageRAG | null = null;
+let rag: PageRAG | null = null; // PageRAG instance
 let isInitializing = false;
 let sidebarContainer: HTMLDivElement | null = null;
 
@@ -308,7 +315,7 @@ async function mapAnswerToSources(
     // Calculate similarity with all sources
     const similarities: Array<{ index: number; similarity: number }> = [];
     
-    sourceEmbeddings.forEach((sourceEmbedding, sourceIndex) => {
+    sourceEmbeddings.forEach((sourceEmbedding: number[] | undefined, sourceIndex: number) => {
       if (sourceEmbedding) {
         const similarity = calculateCosineSimilarity(segmentEmbedding, sourceEmbedding);
         similarities.push({ index: sourceIndex, similarity });
@@ -386,7 +393,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const senderTabId = sender.tab?.id;
     
     rag.search(message.query, message.options)
-      .then(async results => {
+      .then(async (results: SearchResult[]) => {
         logger.log('[ContentScript] Search returned results:', results.length);
         
         // Validate search results
@@ -403,7 +410,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         // Log search results details
         logger.log('[ContentScript] Top search results:');
-        results.slice(0, 5).forEach((result, idx) => {
+        results.slice(0, 5).forEach((result: SearchResult, idx: number) => {
           const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
           const preview = chunkText.substring(0, 100) + (chunkText.length > 100 ? '...' : '');
           logger.log(`[ContentScript] Result ${idx + 1}: score=${result.score.toFixed(3)}, text="${preview}"`);
@@ -417,7 +424,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const topChunks = results.slice(0, Math.min(15, results.length));
         
         // Validate chunks have content
-        const validChunks = topChunks.filter(result => {
+        const validChunks = topChunks.filter((result: SearchResult) => {
           const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
           const hasContent = chunkText && chunkText.trim().length > 10; // At least 10 chars
           if (!hasContent) {
@@ -442,7 +449,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         // Build context from valid chunks
         const context = validChunks
-          .map((result, idx) => {
+          .map((result: SearchResult, idx: number) => {
             const chunkText = result.chunk.metadata?.raw_text || result.chunk.text;
             // Log full chunk text (not just preview) to debug truncation issues
             logger.log(`[ContentScript] Chunk ${idx + 1} length: ${chunkText.length} chars`);
@@ -486,31 +493,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             agentMode: llmConfig?.agentMode
           });
           
-          const llmServiceOptions: any = {
-            provider: provider as any,
-            modelName: llmConfig?.model,
-            requestTimeoutMs: llmConfig?.timeout
-          };
+          // Check if agent mode is enabled and provider supports it
+          const useAgentMode = llmConfig?.agentMode && provider !== 'transformers';
           
-          // Set provider-specific options
-          if (provider === 'ollama') {
-            llmServiceOptions.ollamaUrl = llmConfig?.apiUrl;
-          } else if (provider === 'openai' || provider === 'custom') {
-            llmServiceOptions.apiUrl = llmConfig?.apiUrl;
-            llmServiceOptions.apiKey = llmConfig?.apiKey;
+          // For agent mode, we use AI SDK directly, so we don't need LocalModelService
+          // For regular mode, we still use LocalModelService
+          let llmService: any = null;
+          
+          if (!useAgentMode) {
+            const llmServiceOptions: any = {
+              provider: provider as any,
+              modelName: llmConfig?.model,
+              requestTimeoutMs: llmConfig?.timeout
+            };
+            
+            // Set provider-specific options
+            if (provider === 'ollama') {
+              llmServiceOptions.ollamaUrl = llmConfig?.apiUrl;
+            } else if (provider === 'openai' || provider === 'custom') {
+              llmServiceOptions.apiUrl = llmConfig?.apiUrl;
+              llmServiceOptions.apiKey = llmConfig?.apiKey;
+            }
+            
+            llmService = LocalModelService.getInstance(llmServiceOptions);
+            await llmService.init();
           }
           
-          const llmService = LocalModelService.getInstance(llmServiceOptions);
-          await llmService.init();
+          if (llmConfig?.agentMode && provider === 'transformers') {
+            // Warn user that agent mode is not supported with Transformers.js
+            logger.warn('[ContentScript] Agent mode requested but Transformers.js does not support tool calling. Falling back to regular mode.');
+            console.warn('[PageRAG] ⚠️ Agent mode is not supported with Transformers.js. Only basic semantic search is available. Use Ollama, OpenAI, or Custom API for agent mode with tools.');
+          }
           
-          // Check if agent mode is enabled
-          if (llmConfig?.agentMode) {
+          if (useAgentMode) {
             logger.log('[ContentScript] Agent mode enabled, using AgentOrchestrator');
-            
-            // Import agent components
-            const { AgentOrchestrator } = await import('../core/AgentOrchestrator');
-            const { toolRegistry } = await import('../core/AgentTools');
-            const { createWebSearchTool } = await import('../core/tools/webSearchTool');
             
             // Register web search tool if configured
             if (llmConfig.webSearchProvider && llmConfig.webSearchApiKey) {
@@ -522,8 +538,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               logger.log('[ContentScript] Web search tool registered');
             }
             
-            // Create agent orchestrator
-            const orchestrator = new AgentOrchestrator(llmService, toolRegistry, {
+            // Create agent orchestrator with LLM config (uses AI SDK native tool calling)
+            const orchestrator = new AgentOrchestrator(llmConfig, toolRegistry, {
               maxSteps: llmConfig.maxToolSteps || 3
             });
             
@@ -628,8 +644,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
             }
           } else {
-            // Regular mode (non-agent)
+            // Regular mode (non-agent) or fallback from unsupported agent mode
             logger.log('[ContentScript] Regular mode, using direct LLM call');
+            
+            if (!llmService) {
+              logger.error('[ContentScript] LLM service not initialized for regular mode');
+              sendResponse({ 
+                success: false, 
+                error: 'LLM service not initialized' 
+              });
+              return;
+            }
+            
+            // TypeScript: llmService is guaranteed to be non-null after the check above
+            const service = llmService;
             
             // Build prompt with conversation history if available
             // Enhanced prompt to encourage detailed, comprehensive answers
@@ -686,7 +714,7 @@ Answer:`;
                 }, '*');
               }
               
-              answer = await llmService.generate(prompt, {
+              answer = await service.generate(prompt, {
                 max_new_tokens: 600,
                 temperature: 0.4,
                 top_p: 0.9,
@@ -712,14 +740,14 @@ Answer:`;
               }
             } else {
               // Non-streaming for transformers
-              answer = await llmService.generate(prompt, {
+              answer = await service.generate(prompt, {
                 max_new_tokens: 600,
                 temperature: 0.4,
                 top_p: 0.9
               });
             }
             
-            logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
+            logger.log('[ContentScript] LLM answer generated, length:', answer?.length || 0, 'characters');
             logger.log('[ContentScript] LLM answer:', answer);
           }
         } catch (error) {
@@ -749,7 +777,7 @@ Answer:`;
           citations: citations
         });
       })
-      .catch(error => {
+      .catch((error: any) => {
         console.error('Search error:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         sendResponse({ success: false, error: errorMessage });
@@ -787,7 +815,7 @@ Answer:`;
   if (message.type === 'HIGHLIGHT_RESULT') {
     if (rag && message.chunkId) {
       const chunks = rag.getChunks();
-      const chunk = chunks.find(c => c.id === message.chunkId);
+      const chunk = chunks.find((c: any) => c.id === message.chunkId);
       if (chunk) {
         highlightAndScrollToChunk(chunk);
         sendResponse({ success: true, found: true });
@@ -1222,7 +1250,7 @@ function scrollAndHighlight(element: HTMLElement): void {
 // This makes configureLLMExtraction available in the main page console
 (async () => {
   try {
-    const { saveLLMConfig, getLLMConfig } = await import('../utils/llmContentExtraction');
+    // LLM config helpers are already imported at the top
     
     (window as any).configureLLMExtraction = async (config: any) => {
       try {
