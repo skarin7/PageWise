@@ -393,7 +393,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   // Handle ping for checking if content script is loaded
   if (message.type === 'PING') {
-    sendResponse({ pong: true });
+    try {
+      sendResponse({ pong: true, initialized: rag?.isInitialized() || false });
+    } catch (error) {
+      // If sendResponse fails, try again
+      try {
+        sendResponse({ pong: true, initialized: false });
+      } catch (e) {
+        // Ignore - channel may be closed
+      }
+    }
     return false; // Synchronous response
   }
   
@@ -434,28 +443,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'SHOW_SIDEBAR') {
-    // Initialize RAG when user opens sidebar
-    let responseSent = false;
-    const safeSendResponse = (response: any) => {
-      if (!responseSent) {
-        responseSent = true;
-        try {
-          sendResponse(response);
-        } catch (error) {
-          console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
-        }
-      }
-    };
-    
-    ensureRAGInitialized().then(() => {
-      showSidebar();
-      safeSendResponse({ success: true });
-    }).catch((error) => {
-      console.error('[ContentScript] Failed to initialize RAG:', error);
-      showSidebar(); // Still show sidebar even if initialization fails
-      safeSendResponse({ success: true, warning: 'RAG initialization failed' });
-    });
-    return true; // Async response
+    // Show sidebar immediately - don't initialize RAG yet
+    // RAG will be initialized when user searches or after settings are saved
+    showSidebar();
+    sendResponse({ success: true });
+    return false; // Synchronous response
   }
   
   if (message.type === 'HIDE_SIDEBAR') {
@@ -465,37 +457,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'TOGGLE_SIDEBAR') {
-    // Initialize RAG when user toggles sidebar (if opening)
-    const isCurrentlyVisible = sidebarContainer && sidebarContainer.classList.contains('visible');
-    if (!isCurrentlyVisible) {
-      // Opening sidebar - initialize RAG
-      let responseSent = false;
-      const safeSendResponse = (response: any) => {
-        if (!responseSent) {
-          responseSent = true;
-          try {
-            sendResponse(response);
-          } catch (error) {
-            console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
-          }
-        }
-      };
-      
-      ensureRAGInitialized().then(() => {
-        toggleSidebar();
-        safeSendResponse({ success: true });
-      }).catch((error) => {
-        console.error('[ContentScript] Failed to initialize RAG:', error);
-        toggleSidebar(); // Still toggle sidebar even if initialization fails
-        safeSendResponse({ success: true, warning: 'RAG initialization failed' });
-      });
-      return true; // Async response
-    } else {
-      // Closing sidebar - no need to initialize
-      toggleSidebar();
-      sendResponse({ success: true });
-      return false;
-    }
+    // Toggle sidebar - don't initialize RAG yet
+    // RAG will be initialized when user searches or after settings are saved
+    toggleSidebar();
+    sendResponse({ success: true });
+    return false; // Synchronous response
   }
   
   if (message.type === 'HIGHLIGHT_RESULT') {
@@ -517,11 +483,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === 'INITIALIZE_RAG_AFTER_SETTINGS') {
     // Initialize RAG after settings are saved (first time setup)
+    // This triggers extraction and embedding generation
     ensureRAGInitialized().then(() => {
       logger.log('[ContentScript] RAG initialized after settings configuration');
-      sendResponse({ success: true });
+      sendResponse({ success: true, initialized: true, chunkCount: rag?.getChunks().length || 0 });
     }).catch((error) => {
       console.error('[ContentScript] Failed to initialize RAG after settings:', error);
+      sendResponse({ success: false, error: error.message });
+    });
+    return true; // Async response
+  }
+  
+  if (message.type === 'INITIALIZE_RAG_NOW') {
+    // Initialize RAG on demand (when user wants to search)
+    ensureRAGInitialized().then(() => {
+      logger.log('[ContentScript] RAG initialized on demand');
+      sendResponse({ success: true, initialized: true, chunkCount: rag?.getChunks().length || 0 });
+    }).catch((error) => {
+      console.error('[ContentScript] Failed to initialize RAG:', error);
       sendResponse({ success: false, error: error.message });
     });
     return true; // Async response
@@ -1373,8 +1352,8 @@ function createSidebar(): HTMLDivElement {
 }
 
 async function showSidebar(): Promise<void> {
-  // Initialize RAG when user opens sidebar
-  await ensureRAGInitialized();
+  // DON'T initialize RAG immediately - show settings first if first time
+  // RAG will be initialized when user searches or after settings are saved
   
   // First, check if there are any duplicate sidebars and remove them
   const allSidebars = document.querySelectorAll('#rag-sidebar-container');

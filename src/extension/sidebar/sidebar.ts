@@ -594,7 +594,7 @@ async function fetchProviderModels() {
 /**
  * Check if it's first time use and open settings automatically
  */
-async function checkFirstTimeAndOpenSettings(): Promise<void> {
+async function checkFirstTimeAndOpenSettings(): Promise<boolean> {
   try {
     // Check if user has configured settings before
     const result = await chrome.storage.local.get('rag_settings_configured');
@@ -612,15 +612,25 @@ async function checkFirstTimeAndOpenSettings(): Promise<void> {
       
       if (isFirstTime) {
         console.log('[Sidebar] First time use detected - opening settings automatically');
-        // Wait a bit for UI to be ready
-        setTimeout(() => {
-          openSettings();
-        }, 500);
+        // Open settings immediately and synchronously show the modal
+        // This prevents focus on search input
+        if (settingsModal) {
+          // Show modal immediately (before loadSettings completes)
+          settingsModal.classList.add('show');
+          // Load settings in the background
+          loadSettings().catch(err => console.warn('[Sidebar] Failed to load settings:', err));
+        } else {
+          // Fallback: use openSettings if modal not ready
+          await openSettings();
+        }
+        return true; // Return true to indicate first time
       }
     }
+    return false; // Not first time
   } catch (error) {
     console.warn('[Sidebar] Error checking first time use:', error);
     // Don't block sidebar if check fails
+    return false;
   }
 }
 
@@ -672,7 +682,13 @@ async function saveSettings() {
       if (provider === 'ollama') {
         config.apiUrl = onlineApiUrlInput?.value?.trim() || 'http://localhost:11434';
         // Ollama API token is for web search, not for LLM (can use localhost)
-        // But we still need to check if web search API key is provided
+        // Automatically enable web search if API token is provided
+        const ollamaApiToken = providerTokenInput?.value?.trim();
+        if (ollamaApiToken) {
+          // Auto-enable Ollama web search when token is provided
+          config.webSearchProvider = 'ollama';
+          config.webSearchApiKey = ollamaApiToken;
+        }
       } else if (provider === 'openai') {
         config.apiUrl = 'https://api.openai.com/v1';
         const apiKey = providerTokenInput?.value?.trim();
@@ -707,19 +723,24 @@ async function saveSettings() {
       // Web search configuration (optional for online mode)
       config.maxToolSteps = parseInt(maxToolStepsInput?.value || '3', 10);
       
-      // Get web search provider (optional)
-      const webSearchProvider = webSearchProviderSelect?.value;
-      const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
-      
-      // Only configure web search if both provider and API key are provided
-      if (webSearchProvider && webSearchApiKey) {
-        config.webSearchProvider = webSearchProvider;
-        config.webSearchApiKey = webSearchApiKey;
-      } else {
-        // Web search is optional - don't configure it if not provided
-        config.webSearchProvider = undefined;
-        config.webSearchApiKey = undefined;
+      // For Ollama, web search is already configured above using provider token
+      // For other providers, get web search config from the form (if section is visible)
+      if (provider !== 'ollama') {
+        // Get web search provider (optional)
+        const webSearchProvider = webSearchProviderSelect?.value;
+        const webSearchApiKey = webSearchApiKeyInput?.value?.trim();
+        
+        // Only configure web search if both provider and API key are provided
+        if (webSearchProvider && webSearchApiKey) {
+          config.webSearchProvider = webSearchProvider;
+          config.webSearchApiKey = webSearchApiKey;
+        } else {
+          // Web search is optional - don't configure it if not provided
+          config.webSearchProvider = undefined;
+          config.webSearchApiKey = undefined;
+        }
       }
+      // For Ollama, web search config is already set above if token is provided
     }
     
     await configureLLMExtractionFn(config);
@@ -749,15 +770,27 @@ async function saveSettings() {
       closeSettings();
       
       // If this was first time setup, trigger RAG initialization in content script
-      // The content script will handle initialization when needed
+      // This will extract content and generate embeddings
       if (currentTabId) {
+        setStatus('⏳ Initializing (extracting content and generating embeddings)...', 'loading');
+        searchButton.disabled = true;
+        
         chrome.tabs.sendMessage(currentTabId, { 
           type: 'INITIALIZE_RAG_AFTER_SETTINGS' 
         }, (response) => {
           if (chrome.runtime.lastError) {
             console.log('[Settings] Content script may not be ready yet, RAG will initialize on first search');
-          } else {
+            setStatus('⚠️ Content script not ready - will initialize on first search', 'error');
+            searchButton.disabled = false;
+          } else if (response?.success) {
             console.log('[Settings] RAG initialization triggered');
+            // Update status after initialization
+            setTimeout(() => {
+              updateStatus();
+            }, 2000);
+          } else {
+            setStatus('⚠️ RAG initialization failed - check console', 'error');
+            searchButton.disabled = false;
           }
         });
       }
@@ -911,7 +944,7 @@ let currentTabId: number | null = null;
 let conversationHistory: Message[] = [];
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Get current tab ID
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs[0]?.id) {
@@ -1178,8 +1211,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Load current settings
-  loadSettings();
+  // Load current settings first (needed for first-time check)
+  await loadSettings();
+  
+  // Check if it's first time use BEFORE focusing input or initializing conversation
+  // This must happen early to prevent focus on search input
+  const isFirstTime = await checkFirstTimeAndOpenSettings();
   
   // Show/hide Transformers.js info banner
   updateTransformersInfoBanner();
@@ -1206,14 +1243,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Focus input on load
-  queryInput.focus();
+  // Only focus input if NOT first time use
+  // If first time, settings modal is already open and should prevent interaction
+  if (!isFirstTime) {
+    queryInput.focus();
+  } else {
+    // If first time, ensure settings modal is visible and prevent focus on search
+    // Settings should already be open from checkFirstTimeAndOpenSettings
+    if (settingsModal) {
+      settingsModal.classList.add('show');
+      // Blur any focused elements to ensure settings modal is the focus
+      if (document.activeElement) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    }
+  }
   
   // Initialize conversation display
   renderConversation();
-  
-  // Load settings on page load (to ensure defaults are set)
-  loadSettings();
   
   // Listen for streaming messages from content script via window.postMessage
   // (since sidebar is in an iframe)
@@ -1242,16 +1289,20 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
-  
-  // Check if it's first time use when sidebar loads
-  checkFirstTimeAndOpenSettings();
 });
 
 // Check if content script is available
 async function checkContentScript(tabId: number): Promise<boolean> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'PING' });
-    return true;
+    return new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { type: 'PING' }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    });
   } catch (error) {
     return false;
   }
@@ -1278,7 +1329,10 @@ async function updateStatus() {
     // Content script is auto-injected via manifest.json
     // Just wait a bit and retry - it might just need time to initialize
     await ensureContentScript(currentTabId);
-    setTimeout(updateStatus, 1000);
+    // Retry after a short delay
+    setTimeout(() => {
+      updateStatus();
+    }, 1000);
     return;
   }
 
@@ -1297,8 +1351,9 @@ async function updateStatus() {
         setStatus('⏳ Initializing (this may take a minute for first load)...', 'loading');
         searchButton.disabled = true;
       } else {
-        setStatus('⚠️ Not initialized - check console for errors', 'error');
-        searchButton.disabled = true;
+        // Not initialized yet - this is OK, user needs to configure settings first
+        setStatus('⚙️ Configure settings to get started', 'ready');
+        searchButton.disabled = false; // Allow search, it will initialize on demand
       }
     } else {
       setStatus('⚠️ No response from content script', 'error');
@@ -1326,6 +1381,82 @@ function setStatus(message: string, type: 'ready' | 'loading' | 'error') {
   }
 }
 
+// Summarize conversation history when it exceeds 10 messages
+async function summarizeConversationHistory(): Promise<void> {
+  // We want to keep: [summary] + [last 10 messages]
+  // So if we have more than 11 messages (1 summary + 10 recent + new ones), we need to summarize
+  if (conversationHistory.length <= 10) {
+    return; // No need to summarize
+  }
+
+  // Check if the first message is already a summary
+  const firstMessage = conversationHistory[0];
+  const isFirstMessageSummary = firstMessage?.content?.startsWith('[Conversation Summary]');
+
+  // Get messages to summarize
+  // If we already have a summary, we want to summarize: [old summary] + [messages between summary and last 10]
+  // If we don't have a summary, we want to summarize: [all messages except last 10]
+  const last10Messages = conversationHistory.slice(-10);
+  const messagesToSummarize = isFirstMessageSummary
+    ? conversationHistory.slice(0, -10) // Include the old summary in the new summary
+    : conversationHistory.slice(0, -10);
+
+  if (messagesToSummarize.length === 0) {
+    return; // Nothing to summarize
+  }
+
+  try {
+    // Import LocalModelService dynamically
+    const { LocalModelService } = await import('../../core/LocalModelService');
+    
+    // Get LLM config to initialize the service
+    const config = await getLLMConfigFn();
+    const llmService = LocalModelService.getInstance(config || {});
+    
+    // Create a prompt to summarize the conversation
+    // If the first message is already a summary, we'll include it in the new summary
+    const conversationText = messagesToSummarize
+      .map(msg => {
+        // If it's already a summary, extract just the summary part
+        const content = msg.content.startsWith('[Conversation Summary]')
+          ? msg.content.replace('[Conversation Summary]', '').trim()
+          : `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`;
+        return content;
+      })
+      .join('\n\n');
+    
+    const summaryPrompt = `Please provide a concise summary of the following conversation. Focus on the main topics discussed, key questions asked, and important information shared. Keep it brief but comprehensive.
+
+Conversation:
+${conversationText}
+
+Summary:`;
+
+    // Generate summary
+    const summary = await llmService.generate(summaryPrompt, {
+      max_new_tokens: 300,
+      temperature: 0.3,
+      top_p: 0.9
+    });
+    
+    // Create summary message
+    const summaryMessage: Message = {
+      role: 'assistant',
+      content: `[Conversation Summary] ${summary.trim()}`,
+      timestamp: new Date()
+    };
+
+    // Replace conversation history with: [summary] + [last 10 messages]
+    conversationHistory = [summaryMessage, ...last10Messages];
+    
+    console.log('[Sidebar] Conversation summarized. History now contains summary + last 10 messages.');
+  } catch (error) {
+    console.error('[Sidebar] Failed to summarize conversation:', error);
+    // On error, just keep the last 10 messages without summary
+    conversationHistory = conversationHistory.slice(-10);
+  }
+}
+
 // Handle search
 async function handleSearch() {
   const query = queryInput.value.trim();
@@ -1334,8 +1465,18 @@ async function handleSearch() {
   // Clear input
   queryInput.value = '';
 
+  // Summarize conversation history if it exceeds 10 messages (before adding new message)
+  await summarizeConversationHistory();
+
   // Add user message to conversation
   addMessage('user', query);
+  
+  // After adding, if we have more than 11 messages (summary + 11 recent), summarize again
+  // This ensures we always have at most: [summary] + [last 10 messages]
+  if (conversationHistory.length > 11) {
+    await summarizeConversationHistory();
+  }
+  
   renderConversation();
 
   // Immediate visual feedback
@@ -1367,8 +1508,12 @@ async function handleSearch() {
     }
   }
   
-  // Prepare conversation history (last 10 messages for context)
-  const recentHistory = conversationHistory.slice(-10).map(msg => ({
+  // Don't show initialization message here - let the content script handle it
+  // The ensureRAGInitialized function will check if already initialized and skip if so
+  // Status will be updated automatically by updateStatus() after search completes
+  
+  // Prepare conversation history (summary + last 10 messages, or just last 10 if <= 10 total)
+  const recentHistory = conversationHistory.map(msg => ({
     role: msg.role,
     content: msg.content
   }));
@@ -1399,6 +1544,11 @@ async function handleSearch() {
       }
       
       if (response?.success) {
+        // Update status after successful search (RAG should be initialized now)
+        setTimeout(() => {
+          updateStatus();
+        }, 500);
+        
         // Complete streaming if it was active
         if (currentStreamingMessage) {
           const answer = response.answer || (response.results.length > 0 

@@ -8,6 +8,7 @@
     "prebuild": "npm run clean",
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
+    "dev:source-maps": "webpack --mode development",
     "dev:watch": "webpack --mode development --watch",
     "dev:test": "npm run dev:watch & npx http-server . -p 8080 -o test/full-flow-test.html",
     "test": "echo \"Open test/local-test.html in browser\" && exit 0",

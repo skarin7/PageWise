@@ -366,11 +366,21 @@
             
             // Show/hide typing indicator
             function showTypingIndicator() {
-                document.getElementById('typing-indicator').classList.add('active');
+                const indicator = document.getElementById('typing-indicator');
+                if (indicator) {
+                    indicator.classList.add('active');
+                } else {
+                    console.warn('[Test] Typing indicator element not found');
+                }
             }
             
             function hideTypingIndicator() {
-                document.getElementById('typing-indicator').classList.remove('active');
+                const indicator = document.getElementById('typing-indicator');
+                if (indicator) {
+                    indicator.classList.remove('active');
+                } else {
+                    console.warn('[Test] Typing indicator element not found');
+                }
             }
             
             // Log message flow
