@@ -153,8 +153,7 @@ module.exports = {
   },
   // Use source-map (not eval-source-map) to avoid CSP violations in browser extensions
   // eval-source-map uses eval() which is blocked by Content Security Policy
-  // For browser extensions, we disable source maps completely to avoid any eval() usage
-  // Even 'inline-source-map' can cause issues, so we disable it entirely
-  devtool: false
+  // Enable source maps in development mode for debugging, disable in production
+  devtool: isProduction ? false : 'source-map'
 };
 

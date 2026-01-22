@@ -66,8 +66,26 @@ pagewise/
 
 ## Development
 
-- **Watch mode**: `npm run dev`
+- **Watch mode**: `npm run dev` - Rebuilds on file changes
 - **Production build**: `npm run build`
+- **Test server**: `npm run test:full-flow` - Opens full flow test page
+- **Debug mode**: `npm run debug` - Build with source maps and open test page
+
+### Debugging
+
+For detailed debugging instructions, see [DEBUGGING_GUIDE.md](DEBUGGING_GUIDE.md).
+
+**Quick Debug Setup:**
+1. Run `npm run dev` in one terminal (watch mode)
+2. Run `npm run test:full-flow` in another terminal
+3. Open DevTools and set breakpoints in TypeScript files
+4. Test changes without reloading extension
+
+**Available Debug Functions:**
+- `window.debugSearch(query)` - Test search directly
+- `window.debugRAG()` - Inspect RAG state
+- `window.debugMessages()` - View message history
+- `window.enableDebugLogging()` - Enable debug logging
 
 ## Usage Examples
 

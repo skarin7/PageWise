@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PageWise - Full Flow Test</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 20px;
+        }
+        .main-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .sidebar-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+        button {
+            padding: 12px 24px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        button.secondary {
+            background: #6c757d;
+        }
+        button.secondary:hover {
+            background: #5a6268;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .status.info {
+            background: #e7f3ff;
+            color: #0066cc;
+            border-left: 4px solid #007bff;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border-left: 4px solid #28a745;
+        }
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 4px solid #ffc107;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid #dc3545;
+        }
+        #messages-container {
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 15px;
+            background: #f9f9f9;
+        }
+        .message {
+            margin: 15px 0;
+            padding: 12px;
+            border-radius: 6px;
+            background: white;
+            border-left: 4px solid #007bff;
+        }
+        .message.user {
+            border-left-color: #28a745;
+            background: #e7f3ff;
+        }
+        .message.assistant {
+            border-left-color: #007bff;
+        }
+        .message-header {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        .message-content {
+            color: #666;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .typing-indicator {
+            display: none;
+            padding: 12px;
+            color: #666;
+            font-style: italic;
+        }
+        .typing-indicator.active {
+            display: block;
+        }
+        #message-flow {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .message-flow-item {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid transparent;
+        }
+        .message-flow-item.outgoing {
+            border-left-color: #4ec9b0;
+        }
+        .message-flow-item.incoming {
+            border-left-color: #dcdcaa;
+        }
+        .message-flow-item.error {
+            border-left-color: #f48771;
+        }
+        .debug-controls {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+        }
+        .debug-controls h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .debug-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .debug-buttons button {
+            padding: 8px 16px;
+            font-size: 12px;
+        }
+        #console-output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin-top: 10px;
+        }
+        .test-content {
+            margin-top: 40px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+        }
+        .test-content h2 {
+            margin-top: 0;
+        }
+        @media (max-width: 1024px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 PageWise - Full Flow Test</h1>
+    <p class="subtitle">Test the complete user query flow without reloading the extension</p>
+    
+    <div class="container">
+        <div class="main-panel">
+            <div id="status" class="status info">Loading test environment...</div>
+            
+            <div class="controls">
+                <input type="text" id="query-input" placeholder="Enter your query (e.g., 'What are the benefits?')" />
+                <button id="search-btn">Search</button>
+                <button id="init-btn" class="secondary">Initialize RAG</button>
+                <button id="clear-btn" class="secondary">Clear</button>
+            </div>
+            
+            <div id="messages-container">
+                <div class="typing-indicator" id="typing-indicator">Thinking...</div>
+                <div class="empty-state" style="text-align: center; color: #666; padding: 40px;">
+                    <p>No messages yet. Enter a query to start testing.</p>
+                </div>
+            </div>
+            
+            <div class="test-content">
+                <h2>Test Content</h2>
+                <main>
+                    <h1>Main Title - Company Benefits</h1>
+                    <p>This is the main content area. It contains important information about the company benefits and policies.</p>
+                    
+                    <h2>Health Insurance</h2>
+                    <p>We offer comprehensive health insurance plans including medical, dental, and vision coverage. Our plans cover 100% of premiums for employees.</p>
+                    
+                    <h3>Medical Coverage</h3>
+                    <p>Full medical coverage with low deductibles and copays. Access to a wide network of healthcare providers.</p>
+                    
+                    <h2>Retirement Plans</h2>
+                    <p>401k retirement plans with company matching up to 6% of your salary. Immediate vesting for all contributions.</p>
+                    
+                    <h2>Work-Life Balance</h2>
+                    <p>Flexible work arrangements including remote work options, unlimited PTO, and flexible hours.</p>
+                    
+                    <h3>Remote Work</h3>
+                    <p>Work from anywhere with our fully remote-friendly policy. We provide all necessary equipment and support.</p>
+                    
+                    <h2>Professional Development</h2>
+                    <p>Annual learning budget, conference attendance, and mentorship programs to help you grow your career.</p>
+                </main>
+            </div>
+        </div>
+        
+        <div class="sidebar-panel">
+            <h3>Message Flow</h3>
+            <div id="message-flow"></div>
+            
+            <div class="debug-controls">
+                <h3>Debug Controls</h3>
+                <div class="debug-buttons">
+                    <button onclick="window.debugRAG()">Inspect RAG</button>
+                    <button onclick="window.debugChromeMessages()">View Messages</button>
+                    <button onclick="window.clearChromeMessageHistory()">Clear History</button>
+                    <button onclick="toggleDebugLogging()">Toggle Debug Log</button>
+                </div>
+                <div id="console-output"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load Chrome API mocks first -->
+    <script src="chrome-api-mock.js"></script>
+    
+    <!-- Load content script and sidebar code -->
+    <!-- These will be loaded after build -->
+    <script>
+        // Wait for DOM to be ready
+        document.addEventListener('DOMContentLoaded', async function() {
+            console.log('[Test] Initializing test environment...');
+            
+            let contentScriptLoaded = false;
+            let sidebarLoaded = false;
+            let rag = null;
+            let conversationHistory = [];
+            
+            // Capture console output
+            const originalConsoleLog = console.log;
+            const originalConsoleError = console.error;
+            const originalConsoleWarn = console.warn;
+            const consoleOutput = document.getElementById('console-output');
+            
+            function logToOutput(level, ...args) {
+                const timestamp = new Date().toLocaleTimeString();
+                const color = level === 'ERROR' ? '#f48771' : level === 'WARN' ? '#dcdcaa' : '#4ec9b0';
+                const message = args.map(arg => 
+                    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                ).join(' ');
+                consoleOutput.innerHTML += `<span style="color: ${color}">[${timestamp}] [${level}]</span> ${message}\n`;
+                consoleOutput.scrollTop = consoleOutput.scrollHeight;
+            }
+            
+            console.log = function(...args) {
+                originalConsoleLog.apply(console, args);
+                logToOutput('LOG', ...args);
+            };
+            
+            console.error = function(...args) {
+                originalConsoleError.apply(console, args);
+                logToOutput('ERROR', ...args);
+            };
+            
+            console.warn = function(...args) {
+                originalConsoleWarn.apply(console, args);
+                logToOutput('WARN', ...args);
+            };
+            
+            // Update status
+            function updateStatus(message, type = 'info') {
+                const status = document.getElementById('status');
+                status.textContent = message;
+                status.className = `status ${type}`;
+            }
+            
+            // Add message to UI
+            function addMessage(role, content) {
+                const container = document.getElementById('messages-container');
+                const emptyState = container.querySelector('.empty-state');
+                if (emptyState) {
+                    emptyState.remove();
+                }
+                
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${role}`;
+                messageDiv.innerHTML = `
+                    <div class="message-header">${role === 'user' ? '👤 You' : '🤖 Assistant'}</div>
+                    <div class="message-content">${content}</div>
+                `;
+                container.appendChild(messageDiv);
+                container.scrollTop = container.scrollHeight;
+                
+                conversationHistory.push({ role, content });
+            }
+            
+            // Show/hide typing indicator
+            function showTypingIndicator() {
+                document.getElementById('typing-indicator').classList.add('active');
+            }
+            
+            function hideTypingIndicator() {
+                document.getElementById('typing-indicator').classList.remove('active');
+            }
+            
+            // Log message flow
+            function logMessageFlow(type, message, direction) {
+                const flow = document.getElementById('message-flow');
+                const timestamp = new Date().toLocaleTimeString();
+                const item = document.createElement('div');
+                item.className = `message-flow-item ${direction}`;
+                item.textContent = `[${timestamp}] ${direction.toUpperCase()}: ${type} - ${JSON.stringify(message).substring(0, 100)}`;
+                flow.appendChild(item);
+                flow.scrollTop = flow.scrollHeight;
+            }
+            
+            // Try to load content script
+            async function loadContentScript() {
+                try {
+                    // Check if content script is available in dist
+                    const script = document.createElement('script');
+                    script.src = '../dist/content-script.js';
+                    script.onload = () => {
+                        console.log('[Test] Content script loaded');
+                        contentScriptLoaded = true;
+                        
+                        // Register message handler with chrome mock
+                        if (window.chrome && window.chrome.runtime) {
+                            window.contentScriptMessageHandler = function(message, sender, sendResponse) {
+                                logMessageFlow(message.type, message, 'incoming');
+                                
+                                // Call the actual content script handler
+                                if (window.handleSearchMessage) {
+                                    return window.handleSearchMessage(message, sender, sendResponse);
+                                }
+                                
+                                // Fallback: try to find and call chrome.runtime.onMessage listeners
+                                if (window.chrome && window.chrome.runtime && window.chrome.runtime.onMessage) {
+                                    const listeners = window.chrome.runtime.onMessage.listeners || [];
+                                    listeners.forEach(listener => {
+                                        try {
+                                            const result = listener(message, sender, sendResponse);
+                                            if (result === true) {
+                                                // Async response
+                                            } else if (result !== undefined) {
+                                                sendResponse(result);
+                                            }
+                                        } catch (e) {
+                                            console.error('[Test] Error in message listener:', e);
+                                        }
+                                    });
+                                }
+                                
+                                return false;
+                            };
+                        }
+                    };
+                    script.onerror = () => {
+                        console.warn('[Test] Content script not found. Make sure to run "npm run dev" first.');
+                        updateStatus('⚠️ Content script not loaded. Run "npm run dev" to build.', 'warning');
+                    };
+                    document.head.appendChild(script);
+                } catch (e) {
+                    console.error('[Test] Failed to load content script:', e);
+                }
+            }
+            
+            // Initialize RAG
+            async function initRAG() {
+                try {
+                    updateStatus('Initializing PageRAG... This may take a minute on first load.', 'warning');
+                    document.getElementById('init-btn').disabled = true;
+                    
+                    // Try to use PageRAG from test-bundle
+                    if (typeof PageRAG !== 'undefined') {
+                        rag = new PageRAG();
+                        await rag.init();
+                        updateStatus(`✅ Initialized successfully! Found ${rag.getChunks().length} chunks.`, 'success');
+                        
+                        // Make RAG available globally for debugging
+                        window.testRAG = rag;
+                    } else {
+                        // Try loading test-bundle
+                        const script = document.createElement('script');
+                        script.src = '../dist/test-bundle.js';
+                        script.onload = async () => {
+                            if (typeof PageRAG !== 'undefined') {
+                                rag = new PageRAG();
+                                await rag.init();
+                                updateStatus(`✅ Initialized successfully! Found ${rag.getChunks().length} chunks.`, 'success');
+                                window.testRAG = rag;
+                            } else {
+                                updateStatus('❌ PageRAG not available. Make sure test-bundle.js is built.', 'error');
+                            }
+                        };
+                        script.onerror = () => {
+                            updateStatus('❌ Failed to load test-bundle. Run "npm run dev" first.', 'error');
+                        };
+                        document.head.appendChild(script);
+                    }
+                    
+                    document.getElementById('init-btn').disabled = false;
+                } catch (error) {
+                    updateStatus(`❌ Error: ${error.message}`, 'error');
+                    document.getElementById('init-btn').disabled = false;
+                    console.error(error);
+                }
+            }
+            
+            // Handle search
+            async function handleSearch() {
+                const query = document.getElementById('query-input').value.trim();
+                if (!query) {
+                    updateStatus('Please enter a query', 'warning');
+                    return;
+                }
+                
+                if (!rag && !contentScriptLoaded) {
+                    updateStatus('Please initialize RAG or load content script first', 'warning');
+                    return;
+                }
+                
+                // Clear input
+                document.getElementById('query-input').value = '';
+                
+                // Add user message
+                addMessage('user', query);
+                showTypingIndicator();
+                
+                // Disable search button
+                const searchBtn = document.getElementById('search-btn');
+                searchBtn.disabled = true;
+                searchBtn.textContent = 'Searching...';
+                
+                try {
+                    // Try using content script if available
+                    if (contentScriptLoaded && window.chrome && window.chrome.tabs) {
+                        logMessageFlow('SEARCH', { query, conversationHistory }, 'outgoing');
+                        
+                        window.chrome.tabs.sendMessage(1, {
+                            type: 'SEARCH',
+                            query: query,
+                            conversationHistory: conversationHistory.slice(-10),
+                            options: { limit: 10 }
+                        }, (response) => {
+                            hideTypingIndicator();
+                            searchBtn.disabled = false;
+                            searchBtn.textContent = 'Search';
+                            
+                            if (window.chrome.runtime.lastError) {
+                                addMessage('assistant', `Error: ${window.chrome.runtime.lastError.message}`);
+                                updateStatus('Error in content script', 'error');
+                                return;
+                            }
+                            
+                            if (response && response.success) {
+                                const answer = response.answer || 'No answer generated';
+                                addMessage('assistant', answer);
+                                logMessageFlow('SEARCH_RESPONSE', response, 'incoming');
+                                updateStatus(`✅ Search completed. Found ${response.results?.length || 0} results.`, 'success');
+                            } else {
+                                addMessage('assistant', `Error: ${response?.error || 'Unknown error'}`);
+                                updateStatus('Search failed', 'error');
+                            }
+                        });
+                    } else if (rag) {
+                        // Fallback: use RAG directly
+                        updateStatus('Searching...', 'info');
+                        const results = await rag.search(query, { limit: 10 });
+                        
+                        if (results.length === 0) {
+                            addMessage('assistant', 'I couldn\'t find any relevant information on this page.');
+                            updateStatus('No results found', 'warning');
+                        } else {
+                            const topResult = results[0];
+                            addMessage('assistant', `Found ${results.length} results. Top result: ${topResult.chunk.text.substring(0, 200)}...`);
+                            updateStatus(`Found ${results.length} results`, 'success');
+                        }
+                        
+                        hideTypingIndicator();
+                        searchBtn.disabled = false;
+                        searchBtn.textContent = 'Search';
+                    } else {
+                        throw new Error('Neither content script nor RAG is available');
+                    }
+                } catch (error) {
+                    hideTypingIndicator();
+                    searchBtn.disabled = false;
+                    searchBtn.textContent = 'Search';
+                    addMessage('assistant', `Error: ${error.message}`);
+                    updateStatus(`Error: ${error.message}`, 'error');
+                    console.error(error);
+                }
+            }
+            
+            // Event listeners
+            document.getElementById('search-btn').addEventListener('click', handleSearch);
+            document.getElementById('init-btn').addEventListener('click', initRAG);
+            document.getElementById('query-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSearch();
+                }
+            });
+            document.getElementById('clear-btn').addEventListener('click', () => {
+                const container = document.getElementById('messages-container');
+                container.innerHTML = '<div class="empty-state" style="text-align: center; color: #666; padding: 40px;"><p>No messages yet. Enter a query to start testing.</p></div>';
+                conversationHistory = [];
+                document.getElementById('message-flow').innerHTML = '';
+                document.getElementById('console-output').innerHTML = '';
+            });
+            
+            // Global debug functions
+            window.debugRAG = function() {
+                if (rag) {
+                    console.log('RAG State:', {
+                        initialized: rag.isInitialized(),
+                        chunkCount: rag.getChunks().length,
+                        chunks: rag.getChunks().slice(0, 5)
+                    });
+                } else if (window.testRAG) {
+                    console.log('RAG State:', {
+                        initialized: window.testRAG.isInitialized(),
+                        chunkCount: window.testRAG.getChunks().length,
+                        chunks: window.testRAG.getChunks().slice(0, 5)
+                    });
+                } else {
+                    console.warn('RAG not initialized. Click "Initialize RAG" first.');
+                }
+            };
+            
+            window.toggleDebugLogging = function() {
+                if (window.ragToggleLogging) {
+                    const enabled = window.ragToggleLogging();
+                    updateStatus(`Debug logging ${enabled ? 'enabled' : 'disabled'}`, enabled ? 'success' : 'info');
+                } else {
+                    console.warn('Debug logging functions not available');
+                }
+            };
+            
+            // Load content script
+            await loadContentScript();
+            
+            // Check if PageRAG is available
+            if (typeof PageRAG !== 'undefined') {
+                updateStatus('✅ Test environment ready! PageRAG is available. Click "Initialize RAG" to start.', 'success');
+            } else {
+                updateStatus('⚠️ PageRAG not loaded. Make sure to run "npm run dev" first, then refresh this page.', 'warning');
+            }
+        });
+    </script>
+</body>
+</html>

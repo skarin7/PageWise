@@ -1,9 +1,19 @@
 /**
- * Simple logger utility with on/off toggle
+ * Simple logger utility with on/off toggle and debug levels
  * Stores preference in localStorage for persistence
  */
 
 const LOG_STORAGE_KEY = 'rag_extension_logging_enabled';
+const LOG_LEVEL_KEY = 'rag_extension_log_level';
+
+type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+const LOG_LEVELS: Record<LogLevel, number> = {
+  DEBUG: 0,
+  INFO: 1,
+  WARN: 2,
+  ERROR: 3
+};
 
 /**
  * Check if logging is enabled (default: true)
@@ -45,13 +55,43 @@ export function toggleLogging(): boolean {
 }
 
 /**
- * Logger class that respects the enabled/disabled state
+ * Get current log level
+ */
+function getLogLevel(): LogLevel {
+  try {
+    const stored = localStorage.getItem(LOG_LEVEL_KEY);
+    if (stored && ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(stored)) {
+      return stored as LogLevel;
+    }
+    return 'INFO'; // Default level
+  } catch (e) {
+    return 'INFO';
+  }
+}
+
+/**
+ * Set log level
+ */
+export function setLogLevel(level: LogLevel): void {
+  try {
+    localStorage.setItem(LOG_LEVEL_KEY, level);
+    console.log(`%c[RAG Logger] Log level set to ${level}`, 
+      `color: #007bff; font-weight: bold;`);
+  } catch (e) {
+    console.warn('[RAG Logger] Failed to save log level:', e);
+  }
+}
+
+/**
+ * Logger class that respects the enabled/disabled state and log levels
  */
 class Logger {
   private enabled: boolean;
+  private level: LogLevel;
 
   constructor() {
     this.enabled = isLoggingEnabled();
+    this.level = getLogLevel();
   }
 
   private checkEnabled(): boolean {
@@ -60,14 +100,23 @@ class Logger {
     return this.enabled;
   }
 
+  private shouldLog(level: LogLevel): boolean {
+    if (!this.checkEnabled()) {
+      return false;
+    }
+    // Re-check log level
+    this.level = getLogLevel();
+    return LOG_LEVELS[level] >= LOG_LEVELS[this.level];
+  }
+
   log(...args: any[]): void {
-    if (this.checkEnabled()) {
+    if (this.shouldLog('INFO')) {
       console.log(...args);
     }
   }
 
   warn(...args: any[]): void {
-    if (this.checkEnabled()) {
+    if (this.shouldLog('WARN')) {
       console.warn(...args);
     }
   }
@@ -78,14 +127,14 @@ class Logger {
   }
 
   info(...args: any[]): void {
-    if (this.checkEnabled()) {
+    if (this.shouldLog('INFO')) {
       console.info(...args);
     }
   }
 
   debug(...args: any[]): void {
-    if (this.checkEnabled()) {
-      console.debug(...args);
+    if (this.shouldLog('DEBUG')) {
+      console.debug('[DEBUG]', ...args);
     }
   }
 }
@@ -99,5 +148,12 @@ if (typeof window !== 'undefined') {
   (window as any).ragEnableLogging = () => setLoggingEnabled(true);
   (window as any).ragDisableLogging = () => setLoggingEnabled(false);
   (window as any).ragIsLoggingEnabled = () => isLoggingEnabled();
+  (window as any).ragSetLogLevel = setLogLevel;
+  (window as any).ragGetLogLevel = getLogLevel;
+  (window as any).enableDebugLogging = () => {
+    setLoggingEnabled(true);
+    setLogLevel('DEBUG');
+    console.log('✅ Debug logging enabled with DEBUG level');
+  };
 }
 

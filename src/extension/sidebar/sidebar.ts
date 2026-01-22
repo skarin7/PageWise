@@ -242,10 +242,8 @@ function updateModeVisibility() {
   } else {
     offlineModeConfig.style.display = 'none';
     onlineModeConfig.style.display = 'block';
-    // Always show web search config in online mode
-    if (webSearchConfig) {
-      webSearchConfig.style.display = 'block';
-    }
+    // Web search config visibility is handled by updateOnlineProviderConfig()
+    // Don't force-show it here - let the provider-specific logic decide
   }
   
   // Update provider-specific configs based on mode
@@ -333,31 +331,39 @@ function updateOnlineProviderConfig() {
   
   // Update web search provider options based on main provider
   if (webSearchConfig && webSearchProviderSelect) {
-    // Always show the web search provider selector (web search is optional)
-    const webSearchProviderGroup = webSearchProviderSelect.closest('.form-group') as HTMLElement;
-    if (webSearchProviderGroup) {
-      webSearchProviderGroup.style.display = 'block';
-    }
-    
-    // Show all options including Ollama (users can choose any provider)
-    const allOptions = Array.from(webSearchProviderSelect.options) as HTMLOptionElement[];
-    allOptions.forEach(option => {
-      option.style.display = 'block';
-      option.disabled = false;
-    });
-    
-    // Update web search API key label based on selected web search provider
-    const selectedWebSearchProvider = webSearchProviderSelect.value;
-    const webSearchApiKeyLabel = document.querySelector('label[for="web-search-api-key"]') as HTMLLabelElement;
-    const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
-    
-    if (webSearchApiKeyLabel && webSearchApiKeyInput) {
-      if (selectedWebSearchProvider === 'ollama') {
-        webSearchApiKeyLabel.textContent = 'Ollama API Token (for Web Search)';
-        webSearchApiKeyInput.placeholder = 'Enter Ollama API token from ollama.com';
-      } else {
-        webSearchApiKeyLabel.textContent = 'Web Search API Key';
-        webSearchApiKeyInput.placeholder = 'Enter API key for search provider';
+    // Hide web search config when main provider is Ollama (token is already in provider token field)
+    if (provider === 'ollama') {
+      webSearchConfig.style.display = 'none';
+    } else {
+      // Show web search config for other providers
+      webSearchConfig.style.display = 'block';
+      
+      // Always show the web search provider selector (web search is optional)
+      const webSearchProviderGroup = webSearchProviderSelect.closest('.form-group') as HTMLElement;
+      if (webSearchProviderGroup) {
+        webSearchProviderGroup.style.display = 'block';
+      }
+      
+      // Show all options including Ollama (users can choose any provider)
+      const allOptions = Array.from(webSearchProviderSelect.options) as HTMLOptionElement[];
+      allOptions.forEach(option => {
+        option.style.display = 'block';
+        option.disabled = false;
+      });
+      
+      // Update web search API key label based on selected web search provider
+      const selectedWebSearchProvider = webSearchProviderSelect.value;
+      const webSearchApiKeyLabel = document.querySelector('label[for="web-search-api-key"]') as HTMLLabelElement;
+      const webSearchApiKeyInput = document.getElementById('web-search-api-key') as HTMLInputElement;
+      
+      if (webSearchApiKeyLabel && webSearchApiKeyInput) {
+        if (selectedWebSearchProvider === 'ollama') {
+          webSearchApiKeyLabel.textContent = 'Ollama API Token (for Web Search)';
+          webSearchApiKeyInput.placeholder = 'Enter Ollama API token from ollama.com';
+        } else {
+          webSearchApiKeyLabel.textContent = 'Web Search API Key';
+          webSearchApiKeyInput.placeholder = 'Enter API key for search provider';
+        }
       }
     }
   }
@@ -585,6 +591,39 @@ async function fetchProviderModels() {
   await fetchModelsForProvider(provider, apiUrl, apiKey, modelSelect, modelStatus);
 }
 
+/**
+ * Check if it's first time use and open settings automatically
+ */
+async function checkFirstTimeAndOpenSettings(): Promise<void> {
+  try {
+    // Check if user has configured settings before
+    const result = await chrome.storage.local.get('rag_settings_configured');
+    
+    if (!result.rag_settings_configured) {
+      // Check if config exists and is customized (not just default)
+      const config = await getLLMConfigFn().catch(() => null);
+      
+      // Consider it first time if:
+      // 1. No configured flag exists, AND
+      // 2. Config is default or doesn't have a model selected
+      const isFirstTime = !config || 
+                         !config.model || 
+                         (config.provider === 'transformers' && config.model === 'Xenova/LaMini-Flan-T5-783M' && !config.enabled);
+      
+      if (isFirstTime) {
+        console.log('[Sidebar] First time use detected - opening settings automatically');
+        // Wait a bit for UI to be ready
+        setTimeout(() => {
+          openSettings();
+        }, 500);
+      }
+    }
+  } catch (error) {
+    console.warn('[Sidebar] Error checking first time use:', error);
+    // Don't block sidebar if check fails
+  }
+}
+
 async function saveSettings() {
   try {
     if (!modeSelect) {
@@ -685,6 +724,14 @@ async function saveSettings() {
     
     await configureLLMExtractionFn(config);
     
+    // Mark that settings have been configured
+    try {
+      await chrome.storage.local.set({ rag_settings_configured: true });
+      console.log('[Settings] Marked settings as configured');
+    } catch (e) {
+      console.warn('[Settings] Failed to save configured flag:', e);
+    }
+    
     // Show success message
     const saveButton = document.getElementById('settings-save') as HTMLButtonElement;
     if (saveButton) {
@@ -700,6 +747,20 @@ async function saveSettings() {
     // Close modal after a short delay
     setTimeout(() => {
       closeSettings();
+      
+      // If this was first time setup, trigger RAG initialization in content script
+      // The content script will handle initialization when needed
+      if (currentTabId) {
+        chrome.tabs.sendMessage(currentTabId, { 
+          type: 'INITIALIZE_RAG_AFTER_SETTINGS' 
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('[Settings] Content script may not be ready yet, RAG will initialize on first search');
+          } else {
+            console.log('[Settings] RAG initialization triggered');
+          }
+        });
+      }
     }, 1500);
   } catch (error) {
     console.error('Failed to save settings:', error);
@@ -1174,9 +1235,16 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (event.data.type === 'STREAMING_COMPLETE') {
         // Complete streaming - will be handled by the main response handler
         console.log('[Sidebar] Streaming completed');
+      } else if (event.data.type === 'OPEN_SETTINGS_FIRST_TIME') {
+        // Open settings automatically on first time use
+        console.log('[Sidebar] First time use detected - opening settings');
+        openSettings();
       }
     }
   });
+  
+  // Check if it's first time use when sidebar loads
+  checkFirstTimeAndOpenSettings();
 });
 
 // Check if content script is available

@@ -16,6 +16,7 @@ import { AgentOrchestrator } from '../core/AgentOrchestrator';
 import { toolRegistry } from '../core/AgentTools';
 import { createWebSearchTool } from '../core/tools/webSearchTool';
 import { createRAGPromptWithHistory, createRAGPromptWithoutHistory } from '../prompts';
+import { getEnvironmentType, logEnvironmentInfo } from '../utils/environment';
 
 // Inject highlight styles
 const style = document.createElement('style');
@@ -371,9 +372,24 @@ async function mapAnswerToSources(
   return { citations };
 }
 
+// Log environment info on load (only in development)
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+  logEnvironmentInfo();
+}
+
 // Message listener - set up once, outside init function
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  // logger.log('Content script received message:', message.type);
+  
+  // Debugger breakpoint: Message received
+  if (typeof window !== 'undefined' && window.__DEBUG_MESSAGES__) {
+    debugger;
+  }
+  
+  // Log environment type in debug mode
+  if (typeof window !== 'undefined' && window.__DEBUG_MESSAGES__) {
+    logger.debug('[ContentScript] Environment:', getEnvironmentType());
+  }
   
   // Handle ping for checking if content script is loaded
   if (message.type === 'PING') {
@@ -383,12 +399,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === 'SEARCH') {
     // Initialize RAG if not already initialized (lazy initialization)
+    let responseSent = false;
+    const safeSendResponse = (response: any) => {
+      if (!responseSent) {
+        responseSent = true;
+        try {
+          sendResponse(response);
+        } catch (error) {
+          console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
+        }
+      }
+    };
+    
     ensureRAGInitialized().then(() => {
       // Continue with existing search logic
-      handleSearch(message, sender, sendResponse);
+      handleSearch(message, sender, safeSendResponse);
     }).catch((error) => {
       console.error('[ContentScript] Failed to initialize RAG for search:', error);
-      sendResponse({ 
+      safeSendResponse({ 
         success: false, 
         error: 'Failed to initialize PageRAG. Please try again.' 
       });
@@ -407,13 +435,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === 'SHOW_SIDEBAR') {
     // Initialize RAG when user opens sidebar
+    let responseSent = false;
+    const safeSendResponse = (response: any) => {
+      if (!responseSent) {
+        responseSent = true;
+        try {
+          sendResponse(response);
+        } catch (error) {
+          console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
+        }
+      }
+    };
+    
     ensureRAGInitialized().then(() => {
       showSidebar();
-      sendResponse({ success: true });
+      safeSendResponse({ success: true });
     }).catch((error) => {
       console.error('[ContentScript] Failed to initialize RAG:', error);
       showSidebar(); // Still show sidebar even if initialization fails
-      sendResponse({ success: true, warning: 'RAG initialization failed' });
+      safeSendResponse({ success: true, warning: 'RAG initialization failed' });
     });
     return true; // Async response
   }
@@ -429,13 +469,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const isCurrentlyVisible = sidebarContainer && sidebarContainer.classList.contains('visible');
     if (!isCurrentlyVisible) {
       // Opening sidebar - initialize RAG
+      let responseSent = false;
+      const safeSendResponse = (response: any) => {
+        if (!responseSent) {
+          responseSent = true;
+          try {
+            sendResponse(response);
+          } catch (error) {
+            console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
+          }
+        }
+      };
+      
       ensureRAGInitialized().then(() => {
         toggleSidebar();
-        sendResponse({ success: true });
+        safeSendResponse({ success: true });
       }).catch((error) => {
         console.error('[ContentScript] Failed to initialize RAG:', error);
         toggleSidebar(); // Still toggle sidebar even if initialization fails
-        sendResponse({ success: true, warning: 'RAG initialization failed' });
+        safeSendResponse({ success: true, warning: 'RAG initialization failed' });
       });
       return true; // Async response
     } else {
@@ -463,13 +515,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   
+  if (message.type === 'INITIALIZE_RAG_AFTER_SETTINGS') {
+    // Initialize RAG after settings are saved (first time setup)
+    ensureRAGInitialized().then(() => {
+      logger.log('[ContentScript] RAG initialized after settings configuration');
+      sendResponse({ success: true });
+    }).catch((error) => {
+      console.error('[ContentScript] Failed to initialize RAG after settings:', error);
+      sendResponse({ success: false, error: error.message });
+    });
+    return true; // Async response
+  }
+  
   return false;
 });
 
 // Handle search message (extracted for async initialization)
 async function handleSearch(message: any, sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void): Promise<void> {
+  // Debugger breakpoint: Entry to search handler
+  if (typeof window !== 'undefined' && window.__DEBUG_SEARCH__) {
+    debugger; // Set window.__DEBUG_SEARCH__ = true to enable breakpoint
+  }
+  
+  // Track if response has been sent to prevent multiple calls
+  let responseSent = false;
+  const safeSendResponse = (response: any) => {
+    if (!responseSent) {
+      responseSent = true;
+      try {
+        sendResponse(response);
+      } catch (error) {
+        // Channel may have already closed, ignore error
+        console.warn('[ContentScript] Failed to send response (channel may be closed):', error);
+      }
+    }
+  };
+  
   if (!rag || !rag.isInitialized()) {
-    sendResponse({ 
+    safeSendResponse({ 
       success: false, 
       error: 'PageRAG initialization failed. Please try again.' 
     });
@@ -479,14 +562,25 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
   // Get sender tab ID for streaming updates
   const senderTabId = sender.tab?.id;
   
+  // Debugger breakpoint: Before RAG search
+  logger.debug('[ContentScript] Starting RAG search for query:', message.query);
+  if (typeof window !== 'undefined' && window.__DEBUG_RAG_SEARCH__) {
+    debugger;
+  }
+  
   rag.search(message.query, message.options)
       .then(async (results: SearchResult[]) => {
         logger.log('[ContentScript] Search returned results:', results.length);
         
+        // Debugger breakpoint: After RAG search
+        if (typeof window !== 'undefined' && window.__DEBUG_RAG_RESULTS__) {
+          debugger;
+        }
+        
         // Validate search results
         if (results.length === 0) {
           logger.warn('[ContentScript] No search results found for query:', message.query);
-          sendResponse({ 
+          safeSendResponse({ 
             success: true, 
             results: [],
             answer: 'I couldn\'t find any relevant information on this page to answer your question. Try rephrasing your query or asking about a different topic.',
@@ -522,7 +616,7 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
         
         if (validChunks.length === 0) {
           logger.warn('[ContentScript] All chunks are empty or invalid');
-          sendResponse({ 
+          safeSendResponse({ 
             success: true, 
             results,
             answer: 'I found some results, but they don\'t contain readable content. The page might not be fully loaded yet.',
@@ -553,7 +647,7 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
         // Validate context is substantial
         if (context.length < 100) {
           logger.warn('[ContentScript] Context is too short:', context.length, 'chars');
-          sendResponse({ 
+          safeSendResponse({ 
             success: true, 
             results,
             answer: 'I found some information, but it\'s not enough to provide a comprehensive answer. Try asking a more specific question.',
@@ -567,10 +661,15 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
           // Use the same LLM config that's used for content extraction
           const llmConfig = await getLLMConfig().catch(() => null);
           
+          // Debugger breakpoint: Before LLM call
+          if (typeof window !== 'undefined' && window.__DEBUG_LLM_CALL__) {
+            debugger;
+          }
+          
           // Ensure llmConfig is available
           if (!llmConfig) {
             logger.error('[ContentScript] LLM config not available');
-            sendResponse({ 
+            safeSendResponse({ 
               success: false, 
               error: 'LLM configuration not available' 
             });
@@ -899,7 +998,7 @@ Please provide a clear, helpful answer based on these results.`;
             
             if (!llmService) {
               logger.error('[ContentScript] LLM service not initialized for regular mode');
-              sendResponse({ 
+              safeSendResponse({ 
                 success: false, 
                 error: 'LLM service not initialized' 
               });
@@ -975,11 +1074,21 @@ Please provide a clear, helpful answer based on these results.`;
             
             logger.log('[ContentScript] LLM answer generated, length:', answer?.length || 0, 'characters');
             logger.log('[ContentScript] LLM answer:', answer);
+            
+            // Debugger breakpoint: After LLM call
+            if (typeof window !== 'undefined' && window.__DEBUG_LLM_RESULT__) {
+              debugger;
+            }
           }
         } catch (error) {
           console.error('[ContentScript] LLM generation failed:', error);
           // Continue without answer - will show chunks only
           logger.warn('LLM generation failed, falling back to chunks only');
+          
+          // Debugger breakpoint: LLM error
+          if (typeof window !== 'undefined' && window.__DEBUG_LLM_ERROR__) {
+            debugger;
+          }
         }
         
         // Generate citation mapping if we have an answer
@@ -996,7 +1105,12 @@ Please provide a clear, helpful answer based on these results.`;
           }
         }
         
-        sendResponse({ 
+        // Debugger breakpoint: Before sending response
+        if (typeof window !== 'undefined' && window.__DEBUG_RESPONSE__) {
+          debugger;
+        }
+        
+        safeSendResponse({ 
           success: true, 
           results,
           answer: answer || null,
@@ -1006,7 +1120,13 @@ Please provide a clear, helpful answer based on these results.`;
       .catch((error: any) => {
         console.error('Search error:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
-        sendResponse({ success: false, error: errorMessage });
+        
+        // Debugger breakpoint: Search error
+        if (typeof window !== 'undefined' && window.__DEBUG_SEARCH_ERROR__) {
+          debugger;
+        }
+        
+        safeSendResponse({ success: false, error: errorMessage });
       });
 }
 
@@ -1274,6 +1394,78 @@ async function showSidebar(): Promise<void> {
   } catch (e) {
     console.warn('[ContentScript] Failed to save sidebar state:', e);
   }
+  
+  // Check if it's first time use and auto-open settings
+  await checkAndOpenSettingsIfFirstTime(container);
+}
+
+/**
+ * Check if it's first time use and open settings automatically
+ */
+async function checkAndOpenSettingsIfFirstTime(container: HTMLDivElement): Promise<void> {
+  try {
+    // Check if user has configured settings before
+    const hasConfiguredSettings = await chrome.storage.local.get('rag_settings_configured');
+    
+    if (!hasConfiguredSettings.rag_settings_configured) {
+      // Check if config exists and is customized (not just default)
+      const llmConfig = await getLLMConfig().catch(() => null);
+      
+      // Consider it first time if:
+      // 1. No configured flag exists, AND
+      // 2. Config is default or doesn't have a model selected
+      const isFirstTime = !llmConfig || 
+                         !llmConfig.model || 
+                         (llmConfig.provider === 'transformers' && llmConfig.model === 'Xenova/LaMini-Flan-T5-783M' && !llmConfig.enabled);
+      
+      if (isFirstTime) {
+        logger.log('[ContentScript] First time use detected - opening settings');
+        
+        // Wait for iframe to load
+        const iframe = container.querySelector('#rag-sidebar-iframe') as HTMLIFrameElement;
+        if (iframe) {
+          // Wait for iframe to be ready
+          const waitForIframe = () => {
+            return new Promise<void>((resolve) => {
+              if (iframe.contentWindow) {
+                // Try to send message
+                try {
+                  iframe.contentWindow.postMessage({ type: 'OPEN_SETTINGS_FIRST_TIME' }, '*');
+                  logger.log('[ContentScript] Sent OPEN_SETTINGS_FIRST_TIME message to sidebar');
+                  resolve();
+                } catch (e) {
+                  // Iframe might not be ready yet, wait a bit
+                  setTimeout(() => {
+                    try {
+                      iframe.contentWindow?.postMessage({ type: 'OPEN_SETTINGS_FIRST_TIME' }, '*');
+                      logger.log('[ContentScript] Sent OPEN_SETTINGS_FIRST_TIME message to sidebar (retry)');
+                      resolve();
+                    } catch (e2) {
+                      logger.warn('[ContentScript] Could not send message to sidebar iframe:', e2);
+                      resolve();
+                    }
+                  }, 500);
+                }
+              } else {
+                // Iframe not loaded yet, wait
+                setTimeout(() => {
+                  waitForIframe().then(resolve);
+                }, 100);
+              }
+            });
+          };
+          
+          // Wait a bit for iframe to load, then send message
+          setTimeout(async () => {
+            await waitForIframe();
+          }, 300);
+        }
+      }
+    }
+  } catch (error) {
+    logger.warn('[ContentScript] Error checking first time use:', error);
+    // Don't block sidebar opening if check fails
+  }
 }
 
 async function hideSidebar(): Promise<void> {
@@ -1467,7 +1659,121 @@ function scrollAndHighlight(element: HTMLElement): void {
         }
         return null;
       }
-    };    
+    };
+    
+    // Debug helper functions
+    (window as any).debugSearch = async (query: string, options?: any) => {
+      logger.log('[Debug] Testing search with query:', query);
+      if (!rag || !rag.isInitialized()) {
+        logger.warn('[Debug] RAG not initialized. Initializing...');
+        await ensureRAGInitialized();
+      }
+      
+      if (!rag || !rag.isInitialized()) {
+        console.error('[Debug] Failed to initialize RAG');
+        return null;
+      }
+      
+      try {
+        const results = await rag.search(query, options || { limit: 10 });
+        console.log('[Debug] Search results:', results);
+        console.table(results.map((r: any) => ({
+          score: r.score.toFixed(3),
+          text: r.chunk.text.substring(0, 50) + '...',
+          id: r.chunk.id
+        })));
+        return results;
+      } catch (error) {
+        console.error('[Debug] Search error:', error);
+        throw error;
+      }
+    };
+    
+    (window as any).debugRAG = () => {
+      if (!rag) {
+        console.warn('[Debug] RAG not initialized');
+        return null;
+      }
+      
+      const state = {
+        initialized: rag.isInitialized(),
+        chunkCount: rag.getChunks().length,
+        chunks: rag.getChunks().slice(0, 5).map((c: any) => ({
+          id: c.id,
+          text: c.text.substring(0, 100) + '...',
+          headingPath: c.metadata?.headingPath || []
+        })),
+        isInitializing: isInitializing
+      };
+      
+      console.log('[Debug] RAG State:', state);
+      return state;
+    };
+    
+    window.debugMessages = () => {
+      if (window.chromeMessageHistory) {
+        console.table(window.chromeMessageHistory);
+        return window.chromeMessageHistory;
+      } else {
+        console.log('[Debug] Message history not available (not in test environment)');
+        return [];
+      }
+    };
+    
+    (window as any).debugLLM = async (prompt: string, config?: any) => {
+      logger.log('[Debug] Testing LLM with prompt:', prompt.substring(0, 100) + '...');
+      
+      try {
+        const llmConfig = config || await getLLMConfig().catch(() => null);
+        if (!llmConfig) {
+          console.error('[Debug] LLM config not available');
+          return null;
+        }
+        
+        const provider = llmConfig.provider || 'transformers';
+        const llmServiceOptions: any = {
+          provider: provider as any,
+          modelName: llmConfig?.model,
+          requestTimeoutMs: llmConfig?.timeout
+        };
+        
+        if (provider === 'ollama') {
+          let ollamaUrl = llmConfig?.apiUrl || 'http://localhost:11434';
+          ollamaUrl = ollamaUrl
+            .replace(/\/api\/generate$/, '')
+            .replace(/\/api\/chat$/, '')
+            .replace(/\/$/, '');
+          llmServiceOptions.ollamaUrl = `${ollamaUrl}/api/generate`;
+        } else if (provider === 'openai' || provider === 'custom') {
+          llmServiceOptions.apiUrl = llmConfig?.apiUrl;
+          llmServiceOptions.apiKey = llmConfig?.apiKey;
+        }
+        
+        const llmService = LocalModelService.getInstance(llmServiceOptions);
+        await llmService.init();
+        
+        const response = await llmService.generate(prompt, {
+          max_new_tokens: 200,
+          temperature: 0.4
+        });
+        
+        console.log('[Debug] LLM Response:', response);
+        return response;
+      } catch (error) {
+        console.error('[Debug] LLM error:', error);
+        throw error;
+      }
+    };
+    
+    // Expose message handler for test environment
+    (window as any).handleSearchMessage = handleSearch;
+    
+    console.log('✅ Debug functions available:');
+    console.log('  - window.debugSearch(query, options) - Test search directly');
+    console.log('  - window.debugRAG() - Inspect RAG state');
+    console.log('  - window.debugMessages() - View message history');
+    console.log('  - window.debugLLM(prompt, config) - Test LLM directly');
+    
   } catch (error) {
     console.error('Failed to load LLM config helpers:', error);
   }
