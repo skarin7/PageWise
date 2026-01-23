@@ -1411,7 +1411,36 @@ async function summarizeConversationHistory(): Promise<void> {
     
     // Get LLM config to initialize the service
     const config = await getLLMConfigFn();
-    const llmService = LocalModelService.getInstance(config || {});
+    
+    // Convert LLM config to LocalModelService format
+    const provider = config?.provider || 'transformers';
+    const serviceOptions: any = {
+      provider: provider as any,
+      modelName: config?.model,
+      requestTimeoutMs: config?.timeout
+    };
+    
+    if (provider === 'ollama') {
+      let ollamaUrl = config?.apiUrl || 'http://localhost:11434';
+      // Normalize URL
+      ollamaUrl = ollamaUrl
+        .replace(/\/api\/generate$/, '')
+        .replace(/\/api\/chat$/, '')
+        .replace(/\/api\/tags$/, '')
+        .replace(/\/api$/, '')
+        .replace(/\/generate$/, '')
+        .replace(/\/chat$/, '')
+        .replace(/\/$/, '');
+      serviceOptions.ollamaUrl = `${ollamaUrl}/api/generate`;
+    } else if (provider === 'openai' || provider === 'custom') {
+      serviceOptions.apiUrl = config?.apiUrl;
+      serviceOptions.apiKey = config?.apiKey;
+    }
+    
+    const llmService = LocalModelService.getInstance(serviceOptions);
+    
+    // Initialize the service before using it
+    await llmService.init();
     
     // Create a prompt to summarize the conversation
     // If the first message is already a summary, we'll include it in the new summary

@@ -764,7 +764,7 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
                 apiKey: llmConfig.webSearchApiKey
               });
               toolRegistry.register(webSearchTool);
-              logger.log('[ContentScript] Web search tool registered:', {
+              logger.log('[ContentScript] ✅ Web search tool registered:', {
                 provider: webSearchProvider,
                 hasApiKey: !!llmConfig.webSearchApiKey,
                 toolName: webSearchTool.name,
@@ -776,8 +776,15 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
                 description: t.description.substring(0, 80)
               })));
             } else {
-              // Web search is optional - log info instead of warning
-              logger.log('[ContentScript] Web search tool not configured (optional). Agent will use only page content.');
+              // Web search is optional but recommended for online mode
+              const missingConfig = [];
+              if (!webSearchProvider) missingConfig.push('webSearchProvider');
+              if (!llmConfig.webSearchApiKey) missingConfig.push('webSearchApiKey');
+              logger.warn('[ContentScript] ⚠️ Web search tool not configured. Missing:', missingConfig);
+              logger.warn('[ContentScript] To enable web search in online mode, configure:');
+              logger.warn('[ContentScript]   - Web Search Provider (e.g., "ollama", "tavily", "serper")');
+              logger.warn('[ContentScript]   - Web Search API Key (get from provider)');
+              logger.warn('[ContentScript] Agent will use only page content and training knowledge.');
             }
             
             // Create agent orchestrator with LLM config (uses AI SDK native tool calling)
@@ -921,8 +928,38 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
                 }
               }
               
-              if (toolResults.length > 0 && llmService) {
+              if (toolResults.length > 0) {
                 try {
+                  // In agent mode, llmService might be null, so create a LocalModelService for fallback
+                  let fallbackService = llmService;
+                  if (!fallbackService) {
+                    logger.log('[ContentScript] Creating LocalModelService for fallback summary generation...');
+                    const fallbackServiceOptions: any = {
+                      provider: provider as any,
+                      modelName: llmConfig?.model,
+                      requestTimeoutMs: llmConfig?.timeout
+                    };
+                    
+                    if (provider === 'ollama') {
+                      let ollamaUrl = llmConfig?.apiUrl || 'http://localhost:11434';
+                      ollamaUrl = ollamaUrl
+                        .replace(/\/api\/generate$/, '')
+                        .replace(/\/api\/chat$/, '')
+                        .replace(/\/api\/tags$/, '')
+                        .replace(/\/api$/, '')
+                        .replace(/\/generate$/, '')
+                        .replace(/\/chat$/, '')
+                        .replace(/\/$/, '');
+                      fallbackServiceOptions.ollamaUrl = `${ollamaUrl}/api/generate`;
+                    } else if (provider === 'openai' || provider === 'custom') {
+                      fallbackServiceOptions.apiUrl = llmConfig?.apiUrl;
+                      fallbackServiceOptions.apiKey = llmConfig?.apiKey;
+                    }
+                    
+                    fallbackService = LocalModelService.getInstance(fallbackServiceOptions);
+                    await fallbackService.init();
+                  }
+                  
                   // Create a prompt to summarize the tool results
                   const summaryPrompt = `Based on the following search results, provide a concise answer to the user's question: "${message.query}"
 
@@ -931,8 +968,7 @@ ${toolResults.map((r: any, idx: number) => `${idx + 1}. ${r.title}\n   ${r.snipp
 
 Please provide a clear, helpful answer based on these results.`;
 
-                  const service = llmService;
-                  answer = await service.generate(summaryPrompt, {
+                  answer = await fallbackService.generate(summaryPrompt, {
                     max_new_tokens: 400,
                     temperature: 0.4,
                     top_p: 0.9
@@ -942,12 +978,11 @@ Please provide a clear, helpful answer based on these results.`;
                 } catch (error) {
                   console.error('[ContentScript] Failed to generate fallback summary:', error);
                   logger.warn('[ContentScript] Will show tool results only without summary');
+                  // Format tool results as a readable answer
+                  answer = `I found some relevant information from web search:\n\n${toolResults.map((r: any, idx: number) => `${idx + 1}. **${r.title}**\n   ${r.snippet}\n   Source: ${r.url}`).join('\n\n')}`;
                 }
               } else {
-                logger.warn('[ContentScript] Could not create fallback summary:', {
-                  hasToolResults: toolResults.length > 0,
-                  hasLLMService: !!llmService
-                });
+                logger.warn('[ContentScript] Could not create fallback summary: no tool results extracted');
               }
             }
             
