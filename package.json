@@ -11,7 +11,10 @@
     "dev:source-maps": "webpack --mode development",
     "dev:watch": "webpack --mode development --watch",
     "dev:test": "npm run dev:watch & npx http-server . -p 8080 -o test/full-flow-test.html",
-    "test": "echo \"Open test/local-test.html in browser\" && exit 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "test:server": "npx http-server . -p 8080 -o test/local-test.html",
     "test:full-flow": "npx http-server . -p 8080 -o test/full-flow-test.html",
     "debug": "NODE_ENV=development webpack --mode development && npx http-server . -p 8080 -o test/full-flow-test.html"
@@ -36,9 +39,12 @@
   "devDependencies": {
     "@types/chrome": "^0.0.254",
     "@types/node": "^20.10.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "copy-webpack-plugin": "^11.0.0",
+    "jsdom": "^25.0.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.0",
+    "vitest": "^2.0.0",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
   }
