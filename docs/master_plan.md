@@ -16,6 +16,7 @@ PageWise is a client-side RAG browser extension: semantic search over the curren
 - RAG, embeddings, vector store, sidebar chat, and agent tools are implemented.
 - **Define feature:** Double-click or select a word → “Define” popover → fetches references from configurable API (Options → Define API URL). Default server: `http://127.0.0.1:3001`.
 - **Add to context:** Sidebar has a "+" control at bottom-left; user can add a page URL or paste document text to include in chat context. Stored per tab; background fetches URL content when building agent context.
+- **Contextual prompt templates:** Sidebar chat shows a vertical list of full-sentence suggested prompts above the input, generated from chat history and page context (e.g. Jira URLs get "Are there any similar Jira issues?", "What should I work on next?"). Clicking a row fills the input. UI: chat-bubble icon + prompt text per row, hover highlight.
 - **Outstanding:** Fix `src/utils/__tests__/contentFilter.test.ts` (TS errors) so `npm run build` passes.
 
 ## How to update this plan

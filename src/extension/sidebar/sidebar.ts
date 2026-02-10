@@ -3,6 +3,8 @@
  * This stays open even when clicking elsewhere on the page
  */
 
+import { getContextualPromptTemplates, type ChatPromptTemplate } from '../../utils/chatPromptTemplates';
+
 // Export LLM config helpers IMMEDIATELY (before DOMContentLoaded)
 // These functions are available when you open the sidebar console
 
@@ -962,6 +964,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (tabs[0]?.id) {
       currentTabId = tabs[0].id;
       updateStatus();
+      renderPromptTemplates();
       // Update status every 3 seconds
       setInterval(updateStatus, 3000);
     }
@@ -1341,6 +1344,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Search button
   searchButton.addEventListener('click', handleSearch);
 
+  // Contextual prompt templates: render from chat history + page context (refreshed via renderPromptTemplates())
+  renderPromptTemplates();
+
   // Enter key to send message
   queryInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1592,6 +1598,52 @@ Summary:`;
   }
 }
 
+// Chat bubble icon (three dots) for prompt template rows
+const CHAT_BUBBLE_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/></svg>';
+
+function renderPromptTemplates(): void {
+  const container = document.getElementById('prompt-templates');
+  if (!container) return;
+
+  const chatHistory = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
+
+  if (!currentTabId) {
+    const templates = getContextualPromptTemplates(chatHistory, {});
+    renderPromptTemplateRows(container, templates);
+    return;
+  }
+
+  chrome.tabs.get(currentTabId, (tab) => {
+    const pageContext = { title: tab?.title, url: tab?.url };
+    const templates = getContextualPromptTemplates(chatHistory, pageContext);
+    renderPromptTemplateRows(container, templates);
+  });
+}
+
+function renderPromptTemplateRows(container: HTMLElement, templates: ChatPromptTemplate[]): void {
+  container.innerHTML = '';
+  templates.forEach((t) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'prompt-template-row';
+    row.setAttribute('role', 'listitem');
+    row.title = t.prompt;
+    const icon = document.createElement('span');
+    icon.className = 'prompt-template-icon';
+    icon.innerHTML = CHAT_BUBBLE_ICON_SVG;
+    const text = document.createElement('span');
+    text.className = 'prompt-template-text';
+    text.textContent = t.prompt;
+    row.appendChild(icon);
+    row.appendChild(text);
+    row.addEventListener('click', () => {
+      queryInput.value = t.prompt;
+      queryInput.focus();
+    });
+    container.appendChild(row);
+  });
+}
+
 // Handle search
 async function handleSearch() {
   const query = queryInput.value.trim();
@@ -1613,6 +1665,7 @@ async function handleSearch() {
   }
   
   renderConversation();
+  renderPromptTemplates();
 
   // Immediate visual feedback
   searchButton.disabled = true;
@@ -1711,6 +1764,7 @@ async function handleSearch() {
           
           addMessage('assistant', answerWithCitations, response.results || [], response.citations);
           renderConversation();
+          renderPromptTemplates();
         }
       } else {
         const errorMsg = response?.error || 'Unknown error';
@@ -1818,6 +1872,7 @@ function completeStreamingMessage(finalAnswer: string, sources?: any[], citation
     
     // Re-render to apply citations and formatting
     renderConversation();
+    renderPromptTemplates();
     currentStreamingMessage = null;
   }
 }
@@ -1825,6 +1880,7 @@ function completeStreamingMessage(finalAnswer: string, sources?: any[], citation
 function clearConversation(): void {
   conversationHistory = [];
   renderConversation();
+  renderPromptTemplates();
 }
 
 // Insert citation markers into answer text

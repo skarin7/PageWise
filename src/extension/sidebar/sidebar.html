@@ -510,6 +510,59 @@
       }
     }
     
+    /* Contextual prompt templates – vertical list with icon (sample UI) */
+    .prompt-templates {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin-bottom: 10px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .prompt-template-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      background: #ffffff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      font-family: inherit;
+      font-size: 14px;
+      color: #333;
+      transition: background 0.15s;
+    }
+    .prompt-template-row:hover {
+      background: #f0f0f0;
+    }
+    .prompt-template-row:active {
+      background: #e8e8e8;
+    }
+    .prompt-template-icon {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #666;
+    }
+    .prompt-template-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+    .prompt-template-text {
+      flex: 1;
+      min-width: 0;
+      line-height: 1.4;
+    }
+    
     /* Add to context modal */
     .add-context-modal {
       display: none;
@@ -868,6 +921,7 @@
   </div>
   
   <div class="input-container">
+    <div class="prompt-templates" id="prompt-templates" role="list" aria-label="Suggested prompts"></div>
     <div class="input-row">
       <button type="button" class="add-context-btn" id="add-context-btn" title="Add page or document to context">+</button>
       <div class="input-box">
