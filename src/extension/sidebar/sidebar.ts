@@ -887,6 +887,18 @@ const closeBtn = document.getElementById('close-btn') as HTMLButtonElement;
 let settingsBtn: HTMLButtonElement | null = null;
 const settingsModal = document.getElementById('settings-modal') as HTMLDivElement;
 const settingsClose = document.getElementById('settings-close') as HTMLButtonElement;
+
+const EXTRA_CONTEXT_STORAGE_KEY = 'pagewise_sidebar_extra_context';
+const addContextBtn = document.getElementById('add-context-btn') as HTMLButtonElement;
+const addContextModal = document.getElementById('add-context-modal') as HTMLDivElement;
+const addContextClose = document.getElementById('add-context-close') as HTMLButtonElement;
+const addContextTabs = document.querySelectorAll('.add-context-tab');
+const addContextUrlPanel = document.getElementById('add-context-url-panel') as HTMLDivElement;
+const addContextTextPanel = document.getElementById('add-context-text-panel') as HTMLDivElement;
+const addContextUrlInput = document.getElementById('add-context-url-input') as HTMLInputElement;
+const addContextTextInput = document.getElementById('add-context-text-input') as HTMLTextAreaElement;
+const addContextSubmit = document.getElementById('add-context-submit') as HTMLButtonElement;
+const addContextList = document.getElementById('add-context-list') as HTMLDivElement;
 const settingsCancel = document.getElementById('settings-cancel') as HTMLButtonElement;
 const settingsForm = document.getElementById('settings-form') as HTMLFormElement;
 // Mode selector
@@ -1051,6 +1063,100 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
   }
+
+  // Add to context: open/close modal, tabs, add/remove items
+  type ExtraContextItem = { id: string; type: 'url' | 'text'; value: string; title?: string };
+  async function getExtraContextItems(tabId: number): Promise<ExtraContextItem[]> {
+    const result = await chrome.storage.local.get(EXTRA_CONTEXT_STORAGE_KEY);
+    const byTab = result[EXTRA_CONTEXT_STORAGE_KEY] as Record<string, ExtraContextItem[]> | undefined;
+    return byTab?.[String(tabId)] ?? [];
+  }
+  async function setExtraContextItems(tabId: number, items: ExtraContextItem[]): Promise<void> {
+    const result = await chrome.storage.local.get(EXTRA_CONTEXT_STORAGE_KEY);
+    const byTab = (result[EXTRA_CONTEXT_STORAGE_KEY] as Record<string, ExtraContextItem[]>) ?? {};
+    if (items.length) byTab[String(tabId)] = items;
+    else delete byTab[String(tabId)];
+    await chrome.storage.local.set({ [EXTRA_CONTEXT_STORAGE_KEY]: byTab });
+  }
+  function renderExtraContextList(items: ExtraContextItem[]): void {
+    if (!addContextList) return;
+    if (items.length === 0) {
+      addContextList.innerHTML = '';
+      addContextList.style.display = 'none';
+      return;
+    }
+    addContextList.style.display = 'block';
+    addContextList.innerHTML = `<strong>In context (${items.length}):</strong><ul id="add-context-ul"></ul>`;
+    const ul = document.getElementById('add-context-ul')!;
+    items.forEach((item) => {
+      const li = document.createElement('li');
+      const label = item.type === 'url' ? item.value : (item.value.slice(0, 50) + (item.value.length > 50 ? '…' : ''));
+      li.innerHTML = `<span title="${item.value.slice(0, 200)}">${escapeHtml(label)}</span><button type="button" class="remove-ctx" data-id="${escapeHtml(item.id)}">Remove</button>`;
+      ul.appendChild(li);
+    });
+    ul.querySelectorAll('.remove-ctx').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (currentTabId == null) return;
+        const id = (btn as HTMLElement).dataset.id;
+        const items = await getExtraContextItems(currentTabId);
+        const next = items.filter((i) => i.id !== id);
+        await setExtraContextItems(currentTabId, next);
+        renderExtraContextList(next);
+      });
+    });
+  }
+  function escapeHtml(s: string): string {
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
+  function openAddContextModal(): void {
+    if (!currentTabId || !addContextModal) return;
+    addContextModal.classList.add('show');
+    addContextUrlInput.value = '';
+    addContextTextInput.value = '';
+    addContextTabs.forEach((t) => t.classList.remove('active'));
+    addContextTabs[0].classList.add('active');
+    addContextUrlPanel.classList.add('active');
+    addContextTextPanel.classList.remove('active');
+    getExtraContextItems(currentTabId).then(renderExtraContextList);
+  }
+  function closeAddContextModal(): void {
+    addContextModal?.classList.remove('show');
+  }
+  addContextBtn?.addEventListener('click', () => openAddContextModal());
+  addContextClose?.addEventListener('click', () => closeAddContextModal());
+  addContextModal?.addEventListener('click', (e) => {
+    if (e.target === addContextModal) closeAddContextModal();
+  });
+  addContextTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const t = (tab as HTMLElement).dataset.tab;
+      addContextTabs.forEach((x) => x.classList.remove('active'));
+      tab.classList.add('active');
+      addContextUrlPanel.classList.toggle('active', t === 'url');
+      addContextTextPanel.classList.toggle('active', t === 'text');
+    });
+  });
+  addContextSubmit?.addEventListener('click', async () => {
+    if (currentTabId == null) return;
+    const urlVal = addContextUrlInput?.value?.trim();
+    const textVal = addContextTextInput?.value?.trim();
+    const isUrl = (addContextTabs[0] as HTMLElement).classList.contains('active');
+    const value = isUrl ? urlVal : textVal;
+    if (!value) return;
+    const items = await getExtraContextItems(currentTabId);
+    const newItem: ExtraContextItem = {
+      id: 'ctx-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+      type: isUrl ? 'url' : 'text',
+      value
+    };
+    items.push(newItem);
+    await setExtraContextItems(currentTabId, items);
+    renderExtraContextList(items);
+    if (isUrl) addContextUrlInput!.value = '';
+    else addContextTextInput!.value = '';
+  });
 
   // Provider selection handler
   // Mode selector

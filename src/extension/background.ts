@@ -2,6 +2,19 @@
  * Background Service Worker
  */
 
+import { parseReferencesFromApiResponse } from '../utils/referencesResponse';
+
+/** Fetch URL and return plain text (strip HTML tags). Max ~300k chars. */
+async function fetchUrlAsText(url: string): Promise<string> {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) return '';
+  const html = await res.text();
+  const noScript = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
+  const noStyle = noScript.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
+  const text = noStyle.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > 300000 ? text.slice(0, 300000) + '…' : text;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('PageWise extension installed');
 });
@@ -36,6 +49,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  // Return resolved extra context (text + fetched URL bodies) for a tab
+  if (message.type === 'GET_EXTRA_CONTEXT' && message.tabId != null) {
+    const STORAGE_KEY = 'pagewise_sidebar_extra_context';
+    chrome.storage.local.get(STORAGE_KEY).then((result) => {
+      const byTab = result[STORAGE_KEY] as Record<string, Array<{ id: string; type: 'url' | 'text'; value: string; title?: string }>> | undefined;
+      const items = byTab?.[String(message.tabId)] ?? [];
+      const parts: string[] = [];
+      items.forEach((item) => {
+        if (item.type === 'text') parts.push(`[Added document]\n${item.value}`);
+      });
+      const urlItems = items.filter((i) => i.type === 'url');
+      if (urlItems.length === 0) {
+        sendResponse({ success: true, parts });
+        return;
+      }
+      let pending = urlItems.length;
+      urlItems.forEach((item) => {
+        fetchUrlAsText(item.value)
+          .then((text) => {
+            if (text) parts.push(`[Added page: ${item.value}]\n${text}`);
+            pending--;
+            if (pending === 0) sendResponse({ success: true, parts });
+          })
+          .catch(() => {
+            pending--;
+            if (pending === 0) sendResponse({ success: true, parts });
+          });
+      });
+    }).catch(() => sendResponse({ success: false, parts: [] }));
+    return true;
+  }
+
   // Handle content script injection request from sidebar
   if (message.type === 'INJECT_CONTENT_SCRIPT' && message.tabId) {
     // Check if chrome.scripting is available
@@ -538,6 +583,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     
     return true; // Keep channel open for async response
+  }
+
+  // Define / knowledge-base references lookup
+  if (message.type === 'GET_REFERENCES_FOR_WORD') {
+    const word = message.word;
+    if (!word || typeof word !== 'string') {
+      sendResponse({ success: false, error: 'Missing or invalid word' });
+      return true;
+    }
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get('pagewise_define_api');
+        const config = stored.pagewise_define_api as { apiUrl?: string; apiKey?: string } | undefined;
+        const baseUrl = (config?.apiUrl || '').trim().replace(/\/$/, '');
+        if (!baseUrl) {
+          sendResponse({ success: false, error: 'Define API URL not configured. Set it in Options.' });
+          return;
+        }
+        const url = `${baseUrl}/references?word=${encodeURIComponent(word)}`;
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (config?.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+        const res = await fetch(url, { method: 'GET', headers });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => res.statusText);
+          sendResponse({ success: false, error: `API error: ${res.status} ${errText}` });
+          return;
+        }
+        const data = await res.json();
+        const refs = parseReferencesFromApiResponse(data);
+        sendResponse({ success: true, references: refs });
+      } catch (err) {
+        console.error('[Background] GET_REFERENCES_FOR_WORD failed', err);
+        sendResponse({
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to fetch references',
+        });
+      }
+    })();
+    return true;
   }
 });
 

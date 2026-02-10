@@ -49,3 +49,26 @@ export interface HeadingNode {
   contentStart?: HTMLElement;
 }
 
+/** Single item in sidebar extra context (added via + button) */
+export interface SidebarExtraContextItem {
+  id: string;
+  type: 'url' | 'text';
+  value: string;
+  title?: string;
+}
+
+export const SIDEBAR_EXTRA_CONTEXT_STORAGE_KEY = 'pagewise_sidebar_extra_context';
+
+/** Single reference for the Define feature (word lookup) */
+export interface WordReference {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
+/** Response shape for references API */
+export interface ReferencesResponse {
+  word: string;
+  references: WordReference[];
+}
+

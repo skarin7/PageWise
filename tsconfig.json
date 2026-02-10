@@ -16,7 +16,7 @@
     "sourceMap": true,
     "types": ["chrome", "node"]
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "server/**/*"],
   "exclude": ["node_modules", "dist"]
 }
 

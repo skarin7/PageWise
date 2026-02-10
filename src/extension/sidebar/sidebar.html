@@ -412,15 +412,47 @@
     /* Input container - fixed at bottom */
     .input-container {
       flex-shrink: 0;
-      padding: 35px 16px;
+      padding: 12px 16px 16px;
       border-top: 1px solid #e0e0e0;
       background: #ffffff;
     }
     
-    .input-box {
+    .input-row {
       display: flex;
       gap: 8px;
       align-items: center;
+    }
+    
+    .add-context-btn {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 2px solid #e0e0e0;
+      background: #fff;
+      color: #667eea;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .add-context-btn:hover {
+      border-color: #667eea;
+      background: rgba(102, 126, 234, 0.08);
+    }
+    .add-context-btn:active {
+      transform: scale(0.96);
+    }
+    
+    .input-box {
+      flex: 1;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
     }
     
     .chat-input {
@@ -477,6 +509,65 @@
         box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
       }
     }
+    
+    /* Add to context modal */
+    .add-context-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .add-context-modal.show {
+      display: flex;
+    }
+    .add-context-content {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px;
+      max-width: 400px;
+      width: 90%;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .add-context-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .add-context-header h3 { margin: 0; font-size: 16px; color: #333; }
+    .add-context-close {
+      background: none; border: none; font-size: 22px; cursor: pointer; color: #999; padding: 0 4px; line-height: 1;
+    }
+    .add-context-close:hover { color: #333; }
+    .add-context-hint { font-size: 12px; color: #666; margin-bottom: 12px; }
+    .add-context-tabs {
+      display: flex; gap: 4px; margin-bottom: 10px;
+    }
+    .add-context-tab {
+      padding: 6px 12px; border: 1px solid #e0e0e0; background: #f9f9f9; border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .add-context-tab.active { background: #667eea; color: #fff; border-color: #667eea; }
+    .add-context-panel { display: none; margin-bottom: 10px; }
+    .add-context-panel.active { display: block; }
+    .add-context-input, .add-context-textarea {
+      width: 100%; padding: 8px 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    }
+    .add-context-textarea { resize: vertical; min-height: 80px; font-family: inherit; }
+    .add-context-actions { margin-bottom: 12px; }
+    .add-context-submit {
+      padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; border: none; border-radius: 8px; font-size: 13px; cursor: pointer;
+    }
+    .add-context-submit:hover { opacity: 0.9; }
+    .add-context-list { font-size: 12px; color: #666; }
+    .add-context-list ul { margin: 0; padding-left: 18px; }
+    .add-context-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+    .add-context-list .remove-ctx { background: none; border: none; color: #c00; cursor: pointer; padding: 0 4px; font-size: 14px; }
     
     /* Message bubbles */
     .message {
@@ -777,15 +868,43 @@
   </div>
   
   <div class="input-container">
-    <div class="input-box">
-      <input 
-        type="text" 
-        id="query-input" 
-        class="chat-input" 
-        placeholder="Ask a question about this page..."
-        autocomplete="off"
-      />
-      <button id="search-button" class="send-btn">Send</button>
+    <div class="input-row">
+      <button type="button" class="add-context-btn" id="add-context-btn" title="Add page or document to context">+</button>
+      <div class="input-box">
+        <input 
+          type="text" 
+          id="query-input" 
+          class="chat-input" 
+          placeholder="Ask a question about this page..."
+          autocomplete="off"
+        />
+        <button id="search-button" class="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Add to context modal -->
+  <div class="add-context-modal" id="add-context-modal">
+    <div class="add-context-content">
+      <div class="add-context-header">
+        <h3>Add to context</h3>
+        <button type="button" class="add-context-close" id="add-context-close" aria-label="Close">×</button>
+      </div>
+      <p class="add-context-hint">Add a page URL or paste document text. It will be included when you chat.</p>
+      <div class="add-context-tabs">
+        <button type="button" class="add-context-tab active" data-tab="url">Link (URL)</button>
+        <button type="button" class="add-context-tab" data-tab="text">Paste text</button>
+      </div>
+      <div class="add-context-panel active" id="add-context-url-panel">
+        <input type="url" id="add-context-url-input" class="add-context-input" placeholder="https://example.com/page" />
+      </div>
+      <div class="add-context-panel" id="add-context-text-panel">
+        <textarea id="add-context-text-input" class="add-context-textarea" placeholder="Paste document or text here..." rows="4"></textarea>
+      </div>
+      <div class="add-context-actions">
+        <button type="button" id="add-context-submit" class="add-context-submit">Add</button>
+      </div>
+      <div class="add-context-list" id="add-context-list"></div>
     </div>
   </div>
   

@@ -806,13 +806,25 @@ async function handleSearch(message: any, sender: chrome.runtime.MessageSender, 
               })
               .join('\n\n');
             
-            logger.log('[ContentScript] Page context prepared for agent, length:', pageContext.length, 'characters');
+            // Append sidebar extra context (added links/documents via + button)
+            let fullContext = pageContext;
+            const senderTabId = sender.tab?.id;
+            if (senderTabId != null) {
+              const extra = await new Promise<{ success?: boolean; parts?: string[] }>((resolve) => {
+                chrome.runtime.sendMessage({ type: 'GET_EXTRA_CONTEXT', tabId: senderTabId }, (r) => resolve(r ?? { success: false, parts: [] }));
+              });
+              if (extra?.success && extra.parts?.length) {
+                fullContext = [pageContext, extra.parts.join('\n\n')].filter(Boolean).join('\n\n');
+                logger.log('[ContentScript] Extra context included, parts:', extra.parts.length);
+              }
+            }
+            logger.log('[ContentScript] Page context prepared for agent, length:', fullContext.length, 'characters');
             
             // Pass page context to agent - it will be included in the query
             let agentQuery = message.query;
-            if (pageContext && pageContext.length > 0) {
+            if (fullContext && fullContext.length > 0) {
               // Include page context in the query so agent knows what's available on the page
-              agentQuery = `Context from the current web page:\n\n${pageContext}\n\nUser question: ${message.query}\n\nIMPORTANT: First check if the answer is in the page context above. Only use web search if the information is NOT available in the page context.`;
+              agentQuery = `Context from the current web page and any added links/documents:\n\n${fullContext}\n\nUser question: ${message.query}\n\nIMPORTANT: First check if the answer is in the page context above. Only use web search if the information is NOT available in the page context.`;
             }
             
             // Send tool call notifications to sidebar
@@ -1022,23 +1034,34 @@ Please provide a clear, helpful answer based on these results.`;
             // TypeScript: llmService is guaranteed to be non-null after the check above
             const service = llmService;
             
+            // Include sidebar extra context (added links/documents) in non-agent path
+            let contextToUse = context;
+            if (sender.tab?.id != null) {
+              const extra = await new Promise<{ success?: boolean; parts?: string[] }>((resolve) => {
+                chrome.runtime.sendMessage({ type: 'GET_EXTRA_CONTEXT', tabId: sender.tab!.id }, (r) => resolve(r ?? { success: false, parts: [] }));
+              });
+              if (extra?.success && extra.parts?.length) {
+                contextToUse = [context, extra.parts.join('\n\n')].filter(Boolean).join('\n\n');
+              }
+            }
+            
             // Build prompt using centralized prompt functions
             const prompt = message.conversationHistory && message.conversationHistory.length > 0
               ? createRAGPromptWithHistory({
                   query: message.query,
-                  context,
+                  context: contextToUse,
                   conversationHistory: message.conversationHistory
                 })
               : createRAGPromptWithoutHistory({
                   query: message.query,
-                  context
+                  context: contextToUse
                 });
             
             // Log the prompt for debugging
             logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
             logger.log('[ContentScript] LLM Prompt (first 500 chars):', prompt.substring(0, 500) + '...');
             logger.log('[ContentScript] Query:', message.query);
-            logger.log('[ContentScript] Calling LLM with context length:', context.length);
+            logger.log('[ContentScript] Calling LLM with context length:', contextToUse.length);
             
             // Use streaming for Ollama, non-streaming for others
             if (provider === 'ollama') {

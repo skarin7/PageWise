@@ -6,24 +6,28 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { filterChunksByRelevance, removeBoilerplate } from '../contentFilter';
 import type { Chunk } from '../../types';
 
+type ChunkOverrides = {
+  text: string;
+  id?: string;
+  metadata?: Partial<Chunk['metadata']>;
+};
+
 // Minimal Chunk factory for tests
-function makeChunk(overrides: Partial<Chunk> & { text: string; id?: string }): Chunk {
-  return {
-    id: overrides.id ?? `chunk-${Math.random().toString(36).slice(2, 9)}`,
-    text: overrides.text,
-    metadata: {
-      headingPath: overrides.metadata?.headingPath ?? [],
-      semanticTag: overrides.metadata?.semanticTag ?? 'div',
-      headingLevel: overrides.metadata?.headingLevel ?? 3,
-      contentType: overrides.metadata?.contentType ?? 'paragraph',
-      raw_text: overrides.metadata?.raw_text ?? overrides.text,
-      xpath: overrides.metadata?.xpath ?? '/html/body',
-      visible: overrides.metadata?.visible ?? true,
-      url: overrides.metadata?.url ?? 'https://example.com',
-      ...overrides.metadata,
-    },
-    ...overrides,
-  } as Chunk;
+function makeChunk(overrides: ChunkOverrides): Chunk {
+  const id = overrides.id ?? `chunk-${Math.random().toString(36).slice(2, 9)}`;
+  const text = overrides.text;
+  const metadata: Chunk['metadata'] = {
+    headingPath: overrides.metadata?.headingPath ?? [],
+    semanticTag: overrides.metadata?.semanticTag ?? 'div',
+    headingLevel: overrides.metadata?.headingLevel ?? 3,
+    contentType: overrides.metadata?.contentType ?? 'paragraph',
+    raw_text: overrides.metadata?.raw_text ?? overrides.text,
+    xpath: overrides.metadata?.xpath ?? '/html/body',
+    visible: overrides.metadata?.visible ?? true,
+    url: overrides.metadata?.url ?? 'https://example.com',
+    ...overrides.metadata,
+  };
+  return { id, text, metadata };
 }
 
 describe('filterChunksByRelevance', () => {
