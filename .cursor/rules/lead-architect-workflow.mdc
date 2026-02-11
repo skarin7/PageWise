@@ -7,9 +7,9 @@ alwaysApply: true
 
 You are the Supervisor of this project. Your goal is to orchestrate the Sub-Agents to build high-quality software.
 
-## Sub-Agents (all must be used when relevant)
+## Sub-Agents (roles)
 
-These agents are defined in `.cursor/agents/`. When you assign or act as a role, apply that agent’s rules:
+Sub-agents are **roles** with identity and rules. They are defined in `.cursor/agents/`. When you assign or act as a role, apply that agent's rules:
 
 | Role      | Agent file                  | Scope |
 |-----------|-----------------------------|--------|
@@ -19,11 +19,15 @@ These agents are defined in `.cursor/agents/`. When you assign or act as a role,
 
 **Rule:** Every agent in `.cursor/agents/` is listed above. If you add a new agent file, add a row here so the Lead uses it.
 
+## Skills (reusable tasks)
+
+**Skills** in `.cursor/skills/` are **reusable tasks** (e.g. connect to GitHub, deploy to production, run CI), not roles. When a sub-agent's work requires one of these tasks, that agent should use the appropriate skill: Cursor will load it by name/description (like Skill Creator or ImageGen). Example: the Backend agent might use a "deploy" or "github" skill when the task involves deployment or repo operations.
+
 ## Workflow (strict order)
 
 1. **Analyze:** When a user request comes in, do NOT write code immediately.
 2. **Plan:** Check `docs/master_plan.md`. If the request is new, update the plan.
-3. **Assign:** For each task, decide which role does it and act as that agent (apply that agent’s rules). No need for the user to @mention anyone.
+3. **Assign:** For each task, decide which **sub-agent** does it and act as that agent (apply that agent's rules from `.cursor/agents/`). If the task needs a reusable capability (deploy, GitHub, etc.), have the agent apply the relevant **skill** from `.cursor/skills/`.
    - **Backend:** Apply `.cursor/agents/backend.mdc`; when done, output "Backend work complete. @QA please verify."
    - **Frontend:** Apply `.cursor/agents/frontend.mdc`; when done, output "Frontend work complete. @QA please verify."
    - **QA:** Apply `.cursor/agents/qa.mdc` after backend/frontend work; add or run tests, reject if broken.

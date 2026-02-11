@@ -2,19 +2,29 @@
 
 ## Where is `master_plan.md`?
 
-It lives at **`docs/master_plan.md`**. The `docs/` folder and file were missing; they are now created. The lead-architect rule refers to this file for context and updates (e.g. `/plan`).
+It lives at **`docs/master_plan.md`**. The lead-architect rule refers to this file for context and updates (e.g. `/plan`).
 
-## Why don’t “other agents” get triggered?
+## Sub-agents vs skills
 
-Cursor does **not** run separate AI instances per agent. Here’s how things actually work:
+| Concept | Where | What |
+|--------|--------|------|
+| **Sub-agents** | `.cursor/agents/` | **Roles** (Backend, Frontend, QA). Identity + rules: “You are a Senior Backend Developer…”. The Lead assigns work to these roles. |
+| **Skills** | `.cursor/skills/` | **Reusable tasks** (e.g. deploy, connect to GitHub, run CI). Any sub-agent uses a skill when the task needs that capability. |
 
-1. **Rules (`.cursor/rules/`)**
-   - **Lead architect** (`lead-architect-workflow.mdc`) has `alwaysApply: true`, so it is **always** in context. It tells the single model to “orchestrate” and “assign” work to backend/frontend/QA.
+So: Backend is a **sub-agent** (a role). “Deploy to production” or “connect to GitHub” are **skills** (tasks). The Backend agent might *use* the deploy skill when the user asks for a release.
 
-2. **Agents (`.cursor/agents/`)**
-   - **backend**, **frontend**, and **qa** all have **`alwaysApply: true`**, so their instructions are always in context.
-   - The **Lead Architect** orchestrates them: it assigns work to the right persona and behaves as that agent (backend/frontend/QA) without the user having to @mention anyone.
-   - **How to know all agents are used:** The lead rule (`.cursor/rules/lead-architect-workflow.mdc`) contains a **Sub-Agents** table that explicitly lists every agent file. The lead is instructed to apply each when acting as that role. If you add a new agent (e.g. `docs.mdc`), add a row to that table so the Lead uses it.
+## Sub-agents (`.cursor/agents/`)
 
-3. **Orchestration**
-   - You do **not** need to mention each agent. The Lead Architect decides who handles each part of a task and acts as that agent, then runs QA before marking work done.
+- **backend.mdc** – Core, utils, APIs, server.
+- **frontend.mdc** – Extension UI (popup, sidebar, options).
+- **qa.mdc** – Tests, coverage, Vitest.
+
+The Lead Architect assigns work to one of these roles and applies that agent’s rules.
+
+## Skills (`.cursor/skills/`)
+
+Add task-oriented skills here (e.g. `deploy/SKILL.md`, `connect-github/SKILL.md`). See `.cursor/skills/README.md` for how to add one. When a sub-agent’s task requires that task, the agent applies the skill.
+
+## Orchestration
+
+You do **not** need to @mention each role. The Lead decides who does what, acts as that sub-agent, and has that agent use skills from `.cursor/skills/` when the task requires it.
