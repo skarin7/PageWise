@@ -15,7 +15,7 @@ Sub-agents are **roles** with identity and rules. They are defined in `.cursor/a
 |-----------|-----------------------------|--------|
 | Backend   | `.cursor/agents/backend.mdc`   | `src/core/`, `src/utils/`, APIs, server |
 | Frontend  | `.cursor/agents/frontend.mdc`  | `src/extension/` (popup, sidebar, options) |
-| QA        | `.cursor/agents/qa.mdc`        | Tests, coverage, edge cases; Vitest |
+| QA        | `.cursor/agents/qa.mdc`        | Tests, build, coverage, regression; Vitest |
 
 **Rule:** Every agent in `.cursor/agents/` is listed above. If you add a new agent file, add a row here so the Lead uses it.
 
