@@ -128,6 +128,82 @@ export class PageRAG {
   }
 
   /**
+   * Phase 1 of progressive indexing: chunk the page and make it searchable via BM25 only.
+   * Fast (< 500ms typical) — no model load, no embedding generation. The query input
+   * can be enabled as soon as this resolves.
+   */
+  async initTextOnly(): Promise<void> {
+    if (this.initialized) return;
+
+    if (document.readyState === 'loading') {
+      await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve));
+    }
+
+    await this.vectorStore.init();
+
+    this.chunks = await this.chunker.chunk(document);
+    console.log(`[PageRAG] Phase 1: chunked ${this.chunks.length} chunks (text-only)`);
+
+    if (this.chunks.length === 0) {
+      this.initialized = true;
+      return;
+    }
+
+    // Try cached embeddings first — if all chunks have valid cached embeddings,
+    // we can skip Phase 2 entirely.
+    const vs = this.vectorStore as any;
+    const hasFullCache = vs.embeddings && vs.embeddings.size > 0 &&
+      this.chunks.every((c: Chunk) => vs.embeddings.has(c.id));
+
+    if (hasFullCache) {
+      try {
+        const cached = this.chunks.map((c: Chunk) => vs.embeddings.get(c.id) as number[]);
+        await this.vectorStore.insertChunks(this.chunks, cached);
+        this.initialized = true;
+        console.log('[PageRAG] Phase 1: served from full cache, Phase 2 skipped');
+        return;
+      } catch (err) {
+        console.log('[PageRAG] Cache validation failed, proceeding with text-only insert');
+      }
+    }
+
+    await this.vectorStore.insertChunksTextOnly(this.chunks);
+    this.initialized = true;
+  }
+
+  /**
+   * Phase 2 of progressive indexing: generate embeddings in batches of 5,
+   * yielding to the browser between batches. Safe to await or fire-and-forget.
+   */
+  async embedInBackground(batchSize = 5): Promise<void> {
+    if (this.chunks.length === 0) return;
+
+    // If already cached fully, nothing to do
+    const vs = this.vectorStore as any;
+    if (vs.embeddings && this.chunks.every((c: Chunk) => vs.embeddings.has(c.id))) {
+      console.log('[PageRAG] Phase 2: all embeddings already cached');
+      return;
+    }
+
+    console.log('[PageRAG] Phase 2: loading embedding model...');
+    await this.embedder.init();
+
+    const chunksToEmbed = this.chunks.filter((c: Chunk) => !vs.embeddings.has(c.id));
+    console.log(`[PageRAG] Phase 2: embedding ${chunksToEmbed.length} chunks in batches of ${batchSize}`);
+
+    for (let i = 0; i < chunksToEmbed.length; i += batchSize) {
+      const batch = chunksToEmbed.slice(i, i + batchSize);
+      const embeddings = await this.embedder.embedBatch(batch.map(c => c.text));
+      this.vectorStore.addEmbeddings(batch.map((c, j) => ({ id: c.id, embedding: embeddings[j] })));
+      // Yield to the browser so the UI stays responsive
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    await this.vectorStore.persistEmbeddings();
+    console.log('[PageRAG] Phase 2: done, embeddings persisted');
+  }
+
+  /**
    * Search for content
    */
   async search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
@@ -237,6 +313,17 @@ export class PageRAG {
     this.chunks = [];
     await this.vectorStore.clear();
     await this.init();
+  }
+
+  /**
+   * Reset and re-run Phase 1 only. Used by the SPA hydration retry — the live
+   * DOM may have changed since the first chunk pass.
+   */
+  async reprocessTextOnly(): Promise<void> {
+    this.initialized = false;
+    this.chunks = [];
+    await this.vectorStore.clear();
+    await this.initTextOnly();
   }
 
   /**

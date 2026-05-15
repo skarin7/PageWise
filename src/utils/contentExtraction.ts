@@ -6,6 +6,15 @@
 import { logger } from './logger';
 
 /**
+ * Match a token as a discrete word inside a className/id string. Avoids the
+ * false positives of `.includes()` — e.g. `hasToken('header', 'subheader-link')`
+ * is false, but `.includes('header')` would be true.
+ */
+function hasToken(idClass: string, token: string): boolean {
+  return new RegExp(`(?:^|[-_\\s])${token}(?:$|[-_\\s])`, 'i').test(idClass);
+}
+
+/**
  * Check if element should be removed (negative indicators)
  */
 function isUnlikelyContent(element: HTMLElement): boolean {
@@ -20,38 +29,39 @@ function isUnlikelyContent(element: HTMLElement): boolean {
     '[class*="footer"]', '[class*="header"]', '[class*="ad-"]',
     '[class*="advertisement"]', '[class*="promo"]'
   ];
-  
+
   const tagName = element.tagName.toLowerCase();
   const id = element.id || '';
-  const className = element.className || '';
-  
+  const className = typeof element.className === 'string' ? element.className : '';
+
   // Check tag name - exclude iframes (chatbots, ads, third-party widgets)
   if (['nav', 'footer', 'header', 'aside', 'script', 'style', 'noscript', 'iframe'].includes(tagName)) {
     return true;
   }
-  
+
   // Check role
   const role = element.getAttribute('role');
   if (role && ['navigation', 'banner', 'contentinfo', 'complementary'].includes(role)) {
     return true;
   }
-  
+
   // Check selectors
   for (const selector of unlikelySelectors) {
     if (element.matches(selector)) {
       return true;
     }
   }
-  
-  // Check id/class patterns
+
+  // Check id/class patterns using word-boundary matching to avoid false positives
+  // (e.g. `class="subheader"` should NOT match `header`)
   const idClass = (id + ' ' + className).toLowerCase();
-  if (idClass.includes('nav') || idClass.includes('menu') || 
-      idClass.includes('sidebar') || idClass.includes('footer') ||
-      idClass.includes('header') || idClass.includes('ad-') ||
-      idClass.includes('advertisement') || idClass.includes('promo')) {
+  if (hasToken(idClass, 'nav') || hasToken(idClass, 'menu') ||
+      hasToken(idClass, 'sidebar') || hasToken(idClass, 'footer') ||
+      hasToken(idClass, 'header') || hasToken(idClass, 'advertisement') ||
+      hasToken(idClass, 'ads') || hasToken(idClass, 'promo')) {
     return true;
   }
-  
+
   return false;
 }
 
@@ -65,10 +75,10 @@ function isLikelyContent(element: HTMLElement): boolean {
     '[class*="content"]', '[class*="main"]', '[class*="post"]',
     '[class*="article"]', '[class*="entry"]', '[class*="text"]'
   ];
-  
+
   const tagName = element.tagName.toLowerCase();
   const id = element.id || '';
-  const className = element.className || '';
+  const className = typeof element.className === 'string' ? element.className : '';
   
   // Check semantic tags
   if (['main', 'article'].includes(tagName)) {
@@ -88,21 +98,21 @@ function isLikelyContent(element: HTMLElement): boolean {
     }
   }
   
-  // Check id/class patterns
+  // Check id/class patterns using word-boundary matching
   const idClass = (id + ' ' + className).toLowerCase();
-  if (idClass.includes('content') || idClass.includes('main') ||
-      idClass.includes('post') || idClass.includes('article') ||
-      idClass.includes('entry') || idClass.includes('text')) {
+  if (hasToken(idClass, 'content') || hasToken(idClass, 'main') ||
+      hasToken(idClass, 'post') || hasToken(idClass, 'article') ||
+      hasToken(idClass, 'entry') || hasToken(idClass, 'text')) {
     return true;
   }
-  
+
   return false;
 }
 
 /**
  * Calculate content score for an element (Readability-style)
  */
-function calculateContentScore(element: HTMLElement): number {
+export function calculateContentScore(element: HTMLElement): number {
   let score = 0;
   const text = element.textContent || '';
   const textLength = text.trim().length;

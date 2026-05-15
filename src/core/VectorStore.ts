@@ -200,6 +200,64 @@ export class VectorStore {
   }
 
   /**
+   * Insert chunks into the vector store WITHOUT embeddings (fast path).
+   * Used by progressive indexing — chunks become searchable via Orama's BM25
+   * keyword search immediately, while embeddings are generated in the background.
+   */
+  async insertChunksTextOnly(chunks: Chunk[]): Promise<void> {
+    if (!this.db) await this.init();
+    if (!this.db) throw new Error('Vector store not initialized');
+
+    for (const chunk of chunks) {
+      this.chunkCache.set(chunk.id, chunk);
+      await insert(this.db, {
+        id: chunk.id,
+        text: chunk.text,
+        headingPath: chunk.metadata.headingPath,
+        semanticTag: chunk.metadata.semanticTag,
+        headingLevel: chunk.metadata.headingLevel,
+        parentChunkId: chunk.metadata.parentChunkId || '',
+        contentType: chunk.metadata.contentType,
+        context: chunk.metadata.context || '',
+        entity: chunk.metadata.entity || '',
+        raw_text: chunk.metadata.raw_text,
+        xpath: chunk.metadata.xpath,
+        cssSelector: chunk.metadata.cssSelector || '',
+        type: chunk.metadata.type || 'mixed',
+        widgetIndex: chunk.metadata.widgetIndex || 0,
+        elementIndex: chunk.metadata.elementIndex || 0,
+        visible: chunk.metadata.visible,
+        url: chunk.metadata.url
+      });
+    }
+    console.log(`[VectorStore] Inserted ${chunks.length} chunks (text-only, no embeddings yet)`);
+  }
+
+  /**
+   * Get all cached chunks. Used by progressive indexing to embed chunks in batches.
+   */
+  getAllChunks(): Chunk[] {
+    return Array.from(this.chunkCache.values());
+  }
+
+  /**
+   * Add embeddings for a batch of chunks (used after insertChunksTextOnly).
+   * Does NOT persist to IndexedDB — call saveEmbeddings() once all batches are done.
+   */
+  addEmbeddings(batch: Array<{ id: string; embedding: number[] }>): void {
+    for (const { id, embedding } of batch) {
+      this.embeddings.set(id, embedding);
+    }
+  }
+
+  /**
+   * Public wrapper for saveEmbeddings — called after background embedding completes.
+   */
+  async persistEmbeddings(): Promise<void> {
+    await this.saveEmbeddings();
+  }
+
+  /**
    * Insert chunks into the vector store with embeddings
    */
   async insertChunks(chunks: Chunk[], embeddings?: number[][]): Promise<void> {
