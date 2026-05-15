@@ -194,13 +194,20 @@ async function loadSettings() {
   }
 }
 
+function syncProviderCards(provider: string) {
+  document.querySelectorAll<HTMLElement>('.provider-card').forEach(card => {
+    card.classList.toggle('active', card.dataset.provider === provider);
+  });
+}
+
 function updateProviderConfigVisibility() {
   if (!providerSelect || !providerConfigGroup) return;
-  
+
   const provider = providerSelect.value;
+  syncProviderCards(provider);
   
-  if (provider === 'transformers') {
-    // Hide all provider-specific config for transformers (default)
+  if (provider === 'transformers' || provider === 'chrome-ai') {
+    // No provider-specific config needed for these
     providerConfigGroup.style.display = 'none';
   } else {
     // Show provider-specific config
@@ -361,12 +368,17 @@ async function saveSettings() {
     
     let config: any;
     
-    if (provider === 'transformers') {
-      // Default: Transformers.js
+    if (provider === 'chrome-ai') {
+      config = {
+        enabled: true,
+        provider: 'chrome-ai',
+        model: 'gemini-nano'
+      };
+    } else if (provider === 'transformers') {
       config = {
         enabled: true,
         provider: 'transformers',
-        model: 'Xenova/LaMini-Flan-T5-783M' // Default transformer model
+        model: 'Xenova/LaMini-Flan-T5-783M'
       };
     } else {
       // Other providers require model selection
@@ -531,17 +543,177 @@ const settingsImportFile = document.getElementById('settings-import-file') as HT
 
 // State
 let currentTabId: number | null = null;
+let currentPageUrl: string | null = null;
 let conversationHistory: Message[] = [];
+
+// ── Conversation persistence ─────────────────────────────────────────────────
+
+const CONV_DB_NAME = 'browseiq_conversations';
+const CONV_STORE = 'conversations';
+
+function openConvDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CONV_DB_NAME, 1);
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => resolve(req.result);
+    req.onupgradeneeded = (e: any) => {
+      const db = e.target.result as IDBDatabase;
+      if (!db.objectStoreNames.contains(CONV_STORE)) {
+        db.createObjectStore(CONV_STORE, { keyPath: 'url' });
+      }
+    };
+  });
+}
+
+async function loadConversation(url: string): Promise<any | null> {
+  try {
+    const db = await openConvDB();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(CONV_STORE, 'readonly').objectStore(CONV_STORE).get(url);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch { return null; }
+}
+
+async function saveConversation(url: string, messages: Message[]): Promise<void> {
+  try {
+    const db = await openConvDB();
+    const stored = {
+      url,
+      messages: messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp.toISOString(),
+        sources: m.sources,
+        citations: m.citations
+      })),
+      updatedAt: Date.now()
+    };
+    await new Promise<void>((resolve, reject) => {
+      const req = db.transaction(CONV_STORE, 'readwrite').objectStore(CONV_STORE).put(stored);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.warn('[Sidebar] Failed to persist conversation:', e);
+  }
+}
+
+async function deleteConversation(url: string): Promise<void> {
+  try {
+    const db = await openConvDB();
+    await new Promise<void>((resolve, reject) => {
+      const req = db.transaction(CONV_STORE, 'readwrite').objectStore(CONV_STORE).delete(url);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch { /* ignore */ }
+}
+
+async function loadPersistedConversation(url: string): Promise<void> {
+  const stored = await loadConversation(url);
+  if (!stored || !stored.messages || stored.messages.length === 0) return;
+
+  conversationHistory = stored.messages.map((m: any) => ({
+    role: m.role as 'user' | 'assistant',
+    content: m.content,
+    timestamp: new Date(m.timestamp),
+    sources: m.sources,
+    citations: m.citations
+  }));
+
+  renderConversation();
+
+  // Show a brief dismissing banner
+  const date = new Date(stored.updatedAt).toLocaleDateString();
+  const banner = document.createElement('div');
+  banner.className = 'history-banner';
+  banner.textContent = `${stored.messages.length} messages from your last visit (${date})`;
+  if (messagesContainer) messagesContainer.insertAdjacentElement('afterbegin', banner);
+  setTimeout(() => banner.remove(), 4000);
+}
+
+// ── Chrome AI detection & default provider ───────────────────────────────────
+
+async function detectAndSetDefaultProvider(): Promise<void> {
+  if (!currentTabId) return;
+
+  chrome.tabs.sendMessage(currentTabId, { type: 'CHECK_CHROME_AI' }, async (response) => {
+    if (chrome.runtime.lastError) return;
+
+    if (response?.available) {
+      // Show the Chrome AI card
+      const card = document.getElementById('chrome-ai-card');
+      if (card) card.style.display = '';
+
+      // If no provider has been saved yet, default to Chrome AI
+      const existingConfig = await getLLMConfigFn();
+      if (!existingConfig || !existingConfig.provider) {
+        if (providerSelect) {
+          providerSelect.value = 'chrome-ai';
+          providerSelect.dispatchEvent(new Event('change'));
+        }
+      } else if (existingConfig.provider === 'chrome-ai') {
+        // Already saved as chrome-ai — sync the card state
+        if (providerSelect) {
+          providerSelect.value = 'chrome-ai';
+          syncProviderCards('chrome-ai');
+        }
+      }
+    }
+  });
+}
+
+// ── Summarize quick-action ────────────────────────────────────────────────────
+
+function triggerSummarizeQuery(): void {
+  queryInput.value = 'Summarize the key points of this page in bullet points.';
+  handleSearch();
+}
+
+function performSummarize(): void {
+  if (!currentTabId) return;
+
+  chrome.tabs.sendMessage(currentTabId, { type: 'CHECK_CHROME_SUMMARIZER' }, (response) => {
+    if (!chrome.runtime.lastError && response?.available) {
+      addMessage('user', 'Summarize this page');
+      renderConversation();
+      showTypingIndicator();
+      if (window.parent) window.parent.postMessage({ type: '__RAG_SIDEBAR_EXPAND__' }, '*');
+
+      chrome.tabs.sendMessage(currentTabId!, { type: 'SUMMARIZE_PAGE' }, (sumResponse) => {
+        hideTypingIndicator();
+        if (chrome.runtime.lastError || !sumResponse?.success) {
+          triggerSummarizeQuery();
+          return;
+        }
+        addMessage('assistant', sumResponse.summary);
+        renderConversation();
+      });
+    } else {
+      triggerSummarizeQuery();
+    }
+  });
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-  // Get current tab ID
+  // Get current tab ID and page URL, then run detection
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs[0]?.id) {
       currentTabId = tabs[0].id;
       updateStatus();
-      // Update status every 3 seconds
       setInterval(updateStatus, 3000);
+
+      // Get page URL for conversation persistence and Chrome AI detection
+      chrome.tabs.get(tabs[0].id, (tab) => {
+        currentPageUrl = tab.url || null;
+        if (currentPageUrl) {
+          loadPersistedConversation(currentPageUrl);
+        }
+        detectAndSetDefaultProvider();
+      });
     }
   });
 
@@ -642,13 +814,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Provider selection handler
+  // Provider selection handler (hidden select, kept for compatibility)
   if (providerSelect) {
     providerSelect.addEventListener('change', () => {
       updateProviderConfigVisibility();
     });
   }
-  
+
+  // Provider card clicks — update the hidden select and trigger its change event
+  document.querySelectorAll<HTMLElement>('.provider-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const provider = card.dataset.provider;
+      if (provider && providerSelect) {
+        providerSelect.value = provider;
+        providerSelect.dispatchEvent(new Event('change'));
+      }
+    });
+  });
+
+  // Refresh models button
+  const refreshModelsBtn = document.getElementById('refresh-models-btn');
+  if (refreshModelsBtn) {
+    refreshModelsBtn.addEventListener('click', () => fetchProviderModels());
+  }
+
   // Re-fetch models when API URL or API key changes
   if (apiUrlInput) {
     apiUrlInput.addEventListener('blur', () => {
@@ -746,6 +935,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load current settings
   loadSettings();
+
+  // Summarize button
+  const summarizeBtn = document.getElementById('summarize-btn') as HTMLButtonElement | null;
+  if (summarizeBtn) {
+    summarizeBtn.addEventListener('click', () => performSummarize());
+  }
 
   // Search button
   searchButton.addEventListener('click', handleSearch);
@@ -984,13 +1179,10 @@ let currentStreamingMessage: { element: HTMLElement | null; content: string } | 
 
 // Conversation management functions
 function addMessage(role: 'user' | 'assistant', content: string, sources?: any[], citations?: any): void {
-  conversationHistory.push({
-    role,
-    content,
-    timestamp: new Date(),
-    sources,
-    citations
-  });
+  conversationHistory.push({ role, content, timestamp: new Date(), sources, citations });
+  if (currentPageUrl) {
+    saveConversation(currentPageUrl, conversationHistory).catch(() => {});
+  }
 }
 
 // Add or update streaming message
@@ -1050,6 +1242,9 @@ function completeStreamingMessage(finalAnswer: string, sources?: any[], citation
 function clearConversation(): void {
   conversationHistory = [];
   renderConversation();
+  if (currentPageUrl) {
+    deleteConversation(currentPageUrl).catch(() => {});
+  }
 }
 
 // Insert citation markers into answer text

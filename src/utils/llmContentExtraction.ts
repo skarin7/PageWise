@@ -6,7 +6,7 @@
 
 export interface LLMConfig {
   enabled: boolean;
-  provider?: 'transformers' | 'ollama' | 'openai' | 'custom'; // transformers = local model
+  provider?: 'transformers' | 'ollama' | 'openai' | 'custom' | 'chrome-ai'; // transformers = local model
   model?: string; // For transformers: "Xenova/LaMini-Flan-T5-783M", for APIs: "llama3.2", "mistral", etc.
   apiUrl?: string; // e.g., "http://localhost:11434/api/generate" for Ollama, "https://api.openai.com/v1" for OpenAI, or custom endpoint
   apiKey?: string; // For remote APIs like OpenAI and custom OpenAI-compatible APIs

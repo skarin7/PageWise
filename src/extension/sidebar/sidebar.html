@@ -360,21 +360,167 @@
       background: #e0e0e0;
     }
     
-    .settings-info {
-      background: #e3f2fd;
-      border: 1px solid #90caf9;
+    /* Provider cards */
+    .provider-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .provider-card {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 10px 12px;
+      background: #f8f9fa;
+      border: 2px solid #e9ecef;
+      border-radius: 10px;
+      cursor: pointer;
+      text-align: left;
+      gap: 2px;
+      transition: border-color 0.15s, background 0.15s;
+      font-family: inherit;
+    }
+
+    .provider-card:hover {
+      border-color: #b4a7f5;
+      background: #f5f2fd;
+    }
+
+    .provider-card.active {
+      border-color: #667eea;
+      background: #f0f0fd;
+      box-shadow: 0 0 0 1px #667eea;
+    }
+
+    .provider-card-icon { font-size: 18px; line-height: 1; margin-bottom: 2px; }
+    .provider-card-name { font-size: 13px; font-weight: 600; color: #333; }
+    .provider-card-desc { font-size: 11px; color: #888; }
+
+    /* Form sections */
+    .form-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 16px;
+    }
+
+    .form-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .form-input {
+      padding: 9px 12px;
+      border: 1.5px solid #e0e0e0;
       border-radius: 8px;
-      padding: 12px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      background: #fff;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .form-input:focus {
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+    }
+
+    .form-input[type="password"] { font-family: monospace; }
+
+    .form-input:disabled {
+      background: #f5f5f5;
+      cursor: not-allowed;
+      opacity: 0.7;
+    }
+
+    .form-hint { font-size: 12px; color: #999; }
+
+    /* Model row */
+    .model-row-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .refresh-btn {
+      background: none;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 2px 7px;
       font-size: 13px;
-      color: #1565c0;
-      margin-bottom: 20px;
+      cursor: pointer;
+      color: #667eea;
+      transition: border-color 0.15s, background 0.15s;
+      line-height: 1.5;
     }
-    
-    .settings-info strong {
-      display: block;
-      margin-bottom: 4px;
+
+    .refresh-btn:hover {
+      border-color: #667eea;
+      background: #f0f0fd;
     }
-    
+
+    /* Advanced accordion */
+    .advanced-accordion {
+      margin-top: 16px;
+      border-top: 1px solid #f0f0f0;
+      padding-top: 10px;
+    }
+
+    .advanced-accordion summary {
+      font-size: 12px;
+      color: #aaa;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .advanced-accordion summary::-webkit-details-marker { display: none; }
+    .advanced-accordion summary::after { content: '▸'; font-size: 10px; }
+    .advanced-accordion[open] summary::after { content: '▾'; }
+    .advanced-accordion summary:hover { color: #777; }
+
+    /* Data management */
+    .data-management {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding-top: 12px;
+      margin-top: 4px;
+      border-top: 1px solid #f0f0f0;
+    }
+
+    .data-btn {
+      background: none;
+      border: none;
+      font-size: 12px;
+      color: #bbb;
+      cursor: pointer;
+      padding: 2px 4px;
+      transition: color 0.15s;
+      font-family: inherit;
+    }
+
+    .data-btn:hover { color: #888; }
+    .data-sep { color: #ddd; font-size: 12px; }
+
+    .btn-ghost {
+      background: #f0f0f0;
+      color: #555;
+    }
+
+    .btn-ghost:hover { background: #e4e4e4; }
+
     .status {
       padding: 12px 16px;
       background: #f5f5f5;
@@ -742,13 +888,43 @@
       from { opacity: 0; }
       to { opacity: 1; }
     }
-    
+
+    .summarize-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      padding: 4px 10px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.2s;
+      white-space: nowrap;
+      line-height: 1.6;
+    }
+
+    .summarize-btn:hover { background: rgba(255,255,255,0.35); }
+    .summarize-btn:active { background: rgba(255,255,255,0.45); }
+
+    .history-banner {
+      font-size: 12px;
+      color: #888;
+      background: #f9f9f9;
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+      padding: 6px 12px;
+      text-align: center;
+      margin-bottom: 8px;
+      animation: fadeIn 0.3s ease-out;
+    }
+
   </style>
 </head>
 <body>
   <div class="header">
     <h1>💬 Chat with Page</h1>
     <div class="header-actions">
+      <button class="summarize-btn" id="summarize-btn" title="Summarize this page">✦ Summarize</button>
       <button class="settings-btn" id="settings-btn" title="Settings">⚙️</button>
       <button class="close-btn" id="close-btn" title="Close sidebar">×</button>
     </div>
@@ -782,91 +958,119 @@
   <div class="settings-modal" id="settings-modal">
     <div class="settings-content">
       <div class="settings-header">
-        <h2>⚙️ LLM Settings</h2>
+        <h2>Model Settings</h2>
         <button class="settings-close" id="settings-close">×</button>
       </div>
-      
-      <div class="settings-info">
-        <strong>ℹ️ Default: Transformers.js</strong>
-        The extension uses Transformers.js (local model) by default. Select a provider below to use a different LLM.
-      </div>
-      
+
       <form class="settings-form" id="settings-form">
-        <div class="form-group">
-          <label for="provider">LLM Provider</label>
-          <select id="provider" name="provider">
-            <option value="transformers">Transformers.js (Local - Default)</option>
-            <option value="ollama">Ollama (Local)</option>
-            <option value="openai">OpenAI</option>
-            <option value="custom">Custom OpenAI-compatible API</option>
-          </select>
-          <small>Select the LLM provider to use for content extraction and search</small>
+        <!-- Hidden select kept for JS compatibility -->
+        <select id="provider" name="provider" style="display:none">
+          <option value="chrome-ai">Chrome AI</option>
+          <option value="transformers">Transformers.js</option>
+          <option value="ollama">Ollama</option>
+          <option value="openai">OpenAI</option>
+          <option value="custom">Custom</option>
+        </select>
+
+        <!-- Provider cards -->
+        <div class="form-section" style="margin-top: 0;">
+          <span class="form-section-label">Provider</span>
+          <div class="provider-cards">
+            <!-- Chrome AI card: shown only when window.ai is available, set active if default -->
+            <button type="button" class="provider-card" data-provider="chrome-ai" id="chrome-ai-card" style="display:none">
+              <span class="provider-card-icon">⚡</span>
+              <span class="provider-card-name">Chrome AI</span>
+              <span class="provider-card-desc">Gemini Nano · zero setup</span>
+            </button>
+            <button type="button" class="provider-card" data-provider="transformers">
+              <span class="provider-card-icon">🧠</span>
+              <span class="provider-card-name">Transformers.js</span>
+              <span class="provider-card-desc">Free · runs in browser</span>
+            </button>
+            <button type="button" class="provider-card" data-provider="ollama">
+              <span class="provider-card-icon">🦙</span>
+              <span class="provider-card-name">Ollama</span>
+              <span class="provider-card-desc">Local · needs Ollama app</span>
+            </button>
+            <button type="button" class="provider-card" data-provider="openai">
+              <span class="provider-card-icon">✨</span>
+              <span class="provider-card-name">OpenAI</span>
+              <span class="provider-card-desc">Cloud · needs API key</span>
+            </button>
+            <button type="button" class="provider-card" data-provider="custom">
+              <span class="provider-card-icon">🔌</span>
+              <span class="provider-card-name">Custom API</span>
+              <span class="provider-card-desc">OpenAI-compatible</span>
+            </button>
+          </div>
         </div>
-        
+
+        <!-- Provider-specific config (hidden for Transformers.js) -->
         <div id="provider-config-group" style="display: none;">
-          <div class="form-group" id="api-url-group">
-            <label for="api-url">Base URL</label>
-            <input 
-              type="text" 
-              id="api-url" 
-              name="apiUrl" 
+          <div class="form-section" id="api-url-group">
+            <label class="form-section-label" for="api-url" id="api-url-label">Base URL</label>
+            <input
+              type="text"
+              id="api-url"
+              name="apiUrl"
               placeholder="https://api.openai.com/v1"
+              class="form-input"
             />
-            <small id="api-url-help">API endpoint URL. Change this to refresh the model list.</small>
+            <small class="form-hint" id="api-url-help">API endpoint URL</small>
           </div>
-          
-          <div class="form-group" id="api-key-group" style="display: none;">
-            <label for="api-key">API Key</label>
-            <input 
-              type="password" 
-              id="api-key" 
-              name="apiKey" 
-              placeholder="Enter your API key"
+
+          <div class="form-section" id="api-key-group" style="display: none;">
+            <label class="form-section-label" for="api-key">API Key</label>
+            <input
+              type="password"
+              id="api-key"
+              name="apiKey"
+              placeholder="sk-..."
+              class="form-input"
+              autocomplete="off"
             />
-            <small id="api-key-help">API key for authentication</small>
+            <small class="form-hint" id="api-key-help">Your API key for authentication</small>
           </div>
-          
-          <div class="form-group">
-            <label for="model">Model</label>
-            <select id="model" name="model">
+
+          <div class="form-section">
+            <div class="model-row-label">
+              <label class="form-section-label" for="model">Model</label>
+              <button type="button" class="refresh-btn" id="refresh-models-btn" title="Refresh model list">↻</button>
+            </div>
+            <select id="model" name="model" class="form-input">
               <option value="">Select provider first...</option>
             </select>
-            <small id="model-status">Select a provider to load available models</small>
+            <small class="form-hint" id="model-status">Select a provider to load available models</small>
           </div>
-          
-          <div class="form-group">
-            <label for="timeout">Request Timeout (ms)</label>
-            <input 
-              type="number" 
-              id="timeout" 
-              name="timeout" 
-              placeholder="30000"
-              min="5000"
-              max="300000"
-            />
-            <small>Request timeout in milliseconds (default: 30000)</small>
-          </div>
+
+          <details class="advanced-accordion">
+            <summary>Advanced</summary>
+            <div class="form-section">
+              <label class="form-section-label" for="timeout">Request Timeout (ms)</label>
+              <input
+                type="number"
+                id="timeout"
+                name="timeout"
+                placeholder="30000"
+                min="5000"
+                max="300000"
+                class="form-input"
+              />
+              <small class="form-hint">Default: 30 000 ms</small>
+            </div>
+          </details>
         </div>
-        
-        <div class="form-group" style="border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px;">
-          <label style="font-weight: 600; margin-bottom: 10px; display: block;">Data Management</label>
-          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="button" class="btn btn-secondary" id="settings-export" style="flex: 1; min-width: 120px;">
-              📥 Export Settings
-            </button>
-            <button type="button" class="btn btn-secondary" id="settings-import" style="flex: 1; min-width: 120px;">
-              📤 Import Settings
-            </button>
-          </div>
-          <small style="display: block; margin-top: 8px; color: #666;">
-            Export your settings to a JSON file that you can import later, even after reinstalling the extension.
-          </small>
-          <input type="file" id="settings-import-file" accept=".json" style="display: none;">
-        </div>
-        
+
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="settings-cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="settings-save">Save Settings</button>
+          <button type="button" class="btn btn-ghost" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="settings-save">Save</button>
+        </div>
+
+        <div class="data-management">
+          <button type="button" class="data-btn" id="settings-export">Export settings</button>
+          <span class="data-sep">·</span>
+          <button type="button" class="data-btn" id="settings-import">Import settings</button>
+          <input type="file" id="settings-import-file" accept=".json" style="display:none">
         </div>
       </form>
     </div>

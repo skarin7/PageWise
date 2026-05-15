@@ -14,9 +14,21 @@ chrome.runtime.onConnect.addListener((port) => {
         handleOllamaStreamConnection(message.url, message.body, message.timeout, port);
       }
     });
-    
+
     port.onDisconnect.addListener(() => {
       console.log('[Background] Ollama stream port disconnected');
+    });
+  }
+
+  if (port.name === 'openai-stream') {
+    port.onMessage.addListener((message) => {
+      if (message.type === 'OPENAI_STREAM_START') {
+        handleOpenAIStreamConnection(message.url, message.body, message.apiKey, message.timeout, port);
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      console.log('[Background] OpenAI stream port disconnected');
     });
   }
 });
@@ -599,6 +611,83 @@ async function handleOllamaStreamConnection(
       success: false, 
       error: error instanceof Error ? error.message : 'Stream failed' 
     });
+    port.disconnect();
+  }
+}
+
+async function handleOpenAIStreamConnection(
+  url: string,
+  body: any,
+  apiKey: string,
+  timeout: number | undefined,
+  port: chrome.runtime.Port
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal: controller.signal
+    });
+
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      port.postMessage({ error: `OpenAI API error: ${response.status} ${errorText}` });
+      port.disconnect();
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+
+    if (!reader) {
+      port.postMessage({ error: 'Stream not available' });
+      port.disconnect();
+      return;
+    }
+
+    let buffer = '';
+    let fullResponse = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        port.postMessage({ chunk: '', done: true, fullResponse });
+        port.disconnect();
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'data: [DONE]') continue;
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+            const delta = data.choices?.[0]?.delta?.content;
+            if (delta) {
+              fullResponse += delta;
+              port.postMessage({ chunk: delta, done: false });
+            }
+          } catch { /* skip malformed SSE lines */ }
+        }
+      }
+    }
+  } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
+    port.postMessage({ error: error instanceof Error ? error.message : 'Stream failed' });
     port.disconnect();
   }
 }
