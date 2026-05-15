@@ -543,7 +543,25 @@
       background: #ffebee;
       color: #c62828;
     }
-    
+
+    .index-status-badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+    .index-status-badge.ready-text {
+      background: #fff3e0;
+      color: #e65100;
+    }
+    .index-status-badge.ready-semantic {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
     /* Chat container - scrollable messages area */
     .chat-container {
       flex: 1;
@@ -932,6 +950,7 @@
   
   <div class="status" id="status">
     <span class="loading-spinner" id="status-spinner"></span> <span id="status-text">Checking status...</span>
+    <span class="index-status-badge" id="index-status-badge" style="display:none"></span>
   </div>
   
   <div class="chat-container" id="messages-container">

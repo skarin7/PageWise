@@ -741,20 +741,58 @@ async function initRAG() {
   }
   
   isInitializing = true;
-  
+
   try {
     logger.log('[PageRAG] Starting initialization...');
     logger.log('[PageRAG] URL:', currentUrl);
     rag = new PageRAG();
-    await rag.init();
-      logger.log('[PageRAG] ✅ Initialized successfully with', rag.getChunks().length, 'chunks');
+
+    // Phase 1: text-only index (fast). Sidebar query input becomes usable.
+    await initWithSparseContentRetry(rag);
+    logger.log('[PageRAG] ✅ Phase 1 done:', rag.getChunks().length, 'chunks (text search ready)');
+    notifySidebar({ type: 'INDEX_READY', mode: 'text', chunkCount: rag.getChunks().length });
+
+    // Phase 2: embed in background. Hybrid (BM25+semantic) search activates as
+    // batches complete. We deliberately don't await this — the user can already
+    // query the page while this runs.
+    rag.embedInBackground().then(() => {
+      logger.log('[PageRAG] ✅ Phase 2 done: semantic search ready');
+      notifySidebar({ type: 'INDEX_READY', mode: 'semantic' });
+    }).catch(err => {
+      logger.warn('[PageRAG] Phase 2 (background embedding) failed:', err);
+      // Text-only search still works, so don't surface this as a hard error
+    });
   } catch (error) {
     console.error('[PageRAG] ❌ Failed to initialize:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[PageRAG] Error details:', errorMessage);
     rag = null;
   } finally {
     isInitializing = false;
+  }
+}
+
+/**
+ * Run Phase 1 init, retrying once if the page produces suspiciously sparse content
+ * (< 3 chunks or < 500 chars total). This handles React/Vue/Next.js apps that
+ * hydrate content after DOMContentLoaded.
+ */
+async function initWithSparseContentRetry(ragInstance: PageRAG): Promise<void> {
+  await ragInstance.initTextOnly();
+  const chunks = ragInstance.getChunks();
+  const totalChars = chunks.reduce((sum, c) => sum + (c.text?.length || 0), 0);
+
+  if (chunks.length >= 3 && totalChars >= 500) return;
+
+  logger.log(`[PageRAG] Sparse content detected (${chunks.length} chunks, ${totalChars} chars) - retrying after SPA hydration`);
+  await new Promise(r => setTimeout(r, 1200));
+
+  // Reset and re-chunk; the live DOM should now be hydrated
+  await ragInstance.reprocessTextOnly();
+}
+
+function notifySidebar(message: any): void {
+  const iframe = document.getElementById('rag-sidebar-iframe') as HTMLIFrameElement | null;
+  if (iframe?.contentWindow) {
+    iframe.contentWindow.postMessage(message, '*');
   }
 }
 

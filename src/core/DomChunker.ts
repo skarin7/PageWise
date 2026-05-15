@@ -2,9 +2,10 @@
  * DOM Chunker - Semantic HTML parsing with heading-based chunking
  */
 
+import { Readability } from '@mozilla/readability';
 import type { Chunk, HeadingNode } from '../types';
 import { getXPath, getCssSelector, isVisible, extractTextContent, removeLinks } from '../utils/domHelpers';
-import { findMainContentByHeuristics } from '../utils/contentExtraction';
+import { findMainContentByHeuristics, calculateContentScore } from '../utils/contentExtraction';
 import { findMainContentByLLM, getLLMConfig, type LLMConfig } from '../utils/llmContentExtraction';
 import { buildHeadingHierarchy, findNextHeading, getHeadingPath } from '../utils/headingHierarchy';
 import { htmlToMarkdown } from '../utils/markdownConverter';
@@ -27,11 +28,105 @@ export class DomChunker {
   }
 
   /**
+   * Extract clean article text via Readability (run on a doc clone).
+   * Returns empty string for non-article pages — caller treats absence as "no filter".
+   */
+  private extractArticleText(doc: Document | null): string {
+    if (!doc) return '';
+    try {
+      const clone = doc.cloneNode(true) as Document;
+      const parsed = new Readability(clone).parse();
+      return parsed?.textContent || '';
+    } catch (err) {
+      logger.warn('[DomChunker] Readability failed:', err);
+      return '';
+    }
+  }
+
+  /**
+   * Keep chunks whose words substantially overlap with Readability's article text.
+   * This removes nav/footer/comments noise without touching xpath/cssSelector —
+   * those still point at the live DOM, so click-to-navigate keeps working.
+   */
+  private filterChunksByOverlap(chunks: Chunk[], articleText: string): Chunk[] {
+    const articleWords = new Set(
+      articleText.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
+    );
+    if (articleWords.size < 20) return chunks; // too little signal — don't filter
+
+    const kept: Chunk[] = [];
+    for (const chunk of chunks) {
+      const meaningful = chunk.metadata.raw_text
+        .toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3);
+
+      if (meaningful.length === 0) continue;
+      const overlap = meaningful.filter(w => articleWords.has(w)).length;
+      const ratio = overlap / meaningful.length;
+      if (ratio > 0.5) kept.push(chunk);
+    }
+
+    // Safety: if filter discards everything, fall back to unfiltered chunks.
+    // Readability sometimes returns too narrow an article for sites with
+    // multiple sections (e.g. listicles, sidebars-as-content).
+    if (kept.length === 0 && chunks.length > 0) {
+      logger.warn('[DomChunker] Overlap filter discarded all chunks — falling back to unfiltered');
+      return chunks;
+    }
+
+    logger.log(`[DomChunker] Readability filter: kept ${kept.length}/${chunks.length} chunks`);
+    return kept;
+  }
+
+  /**
+   * Split a chunk whose text exceeds maxChars into multiple smaller chunks,
+   * preserving all metadata (heading path, xpath, etc.) on each split.
+   * Splits on sentence boundaries to avoid mid-sentence cuts that degrade embeddings.
+   */
+  private splitLargeChunk(chunk: Chunk, maxChars = 1500): Chunk[] {
+    if (chunk.text.length <= maxChars) return [chunk];
+
+    const sentences = chunk.text.match(/[^.!?]+[.!?]+\s*/g) || [chunk.text];
+    const parts: Chunk[] = [];
+    let current = '';
+    let partIndex = 0;
+
+    const flush = () => {
+      if (!current.trim()) return;
+      parts.push({
+        ...chunk,
+        id: `${chunk.id}-part${partIndex++}`,
+        text: current.trim(),
+        metadata: { ...chunk.metadata, raw_text: current.trim() }
+      });
+      current = '';
+    };
+
+    for (const sentence of sentences) {
+      if (current.length + sentence.length > maxChars && current.length > 0) {
+        flush();
+      }
+      current += sentence;
+    }
+    flush();
+
+    return parts.length > 0 ? parts : [chunk];
+  }
+
+  /**
    * Main chunking method
    */
   async chunk(document: Document | HTMLElement): Promise<Chunk[]> {
     const root = document instanceof Document ? document.body : document;
     const chunks: Chunk[] = [];
+
+    // Step 0: Try Readability on a doc clone to identify clean article text.
+    // Used as a NOISE FILTER later — we still chunk the live DOM so that
+    // xpath/cssSelector remain valid for click-to-navigate.
+    const ownerDoc = root.ownerDocument || (document instanceof Document ? document : null);
+    const articleText = this.extractArticleText(ownerDoc);
 
     // Step 1: Find main content area
     const mainContent = await this.findMainContent(root);
@@ -71,6 +166,12 @@ export class DomChunker {
         minBM25Score: 0,
         removeDuplicates: true
       });
+      // Readability noise filter (no-op if Readability returned nothing)
+      if (articleText && articleText.length > 200) {
+        processed = this.filterChunksByOverlap(processed, articleText);
+      }
+      // Split oversized chunks for better embedding quality
+      processed = processed.flatMap(c => this.splitLargeChunk(c));
       logger.log(`[DomChunker] Final chunks: ${processed.length}`);
       return processed;
     }
@@ -122,7 +223,15 @@ export class DomChunker {
       removeDuplicates: true
     });
     logger.log(`[DomChunker] After relevance filtering: ${processed.length} chunks`);
-    
+
+    // Readability-based noise filter (no-op when not an article page)
+    if (articleText && articleText.length > 200) {
+      processed = this.filterChunksByOverlap(processed, articleText);
+    }
+
+    // Split oversized chunks so embeddings stay accurate
+    processed = processed.flatMap(c => this.splitLargeChunk(c));
+
     logger.log(`[DomChunker] Final chunks: ${processed.length}`);
     return processed;
   }
@@ -138,7 +247,8 @@ export class DomChunker {
       return main as HTMLElement;
     }
 
-    // Try common content containers
+    // Try common content containers — pick the BEST-scoring match across all selectors,
+    // not the first DOM match (which is often a cookie banner or layout wrapper).
     const contentSelectors = [
       '[class*="content"]',
       '[class*="main"]',
@@ -147,16 +257,22 @@ export class DomChunker {
       'article',
       'section[class*="content"]'
     ];
-    
+
+    const candidates: Array<{ el: HTMLElement; score: number; selector: string }> = [];
     for (const selector of contentSelectors) {
-      const element = root.querySelector(selector);
-      if (element && isVisible(element as HTMLElement)) {
-        const textLength = (element.textContent || '').length;
-        if (textLength > 100) {
-          logger.log(`[DomChunker] Found main content via selector "${selector}":`, element.tagName);
-          return element as HTMLElement;
-        }
+      const matches = Array.from(root.querySelectorAll(selector)) as HTMLElement[];
+      for (const el of matches) {
+        if (!isVisible(el)) continue;
+        if ((el.textContent || '').trim().length < 100) continue;
+        candidates.push({ el, score: calculateContentScore(el), selector });
       }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    if (best && best.score > 0) {
+      logger.log(`[DomChunker] Best-match content (score ${best.score.toFixed(1)}) via "${best.selector}":`, best.el.tagName);
+      return best.el;
     }
 
     // Try LLM-based extraction if enabled
@@ -248,52 +364,60 @@ export class DomChunker {
   }
 
   /**
-   * Extract content under a heading until next heading
+   * Walk siblings of startEl forward, collecting their text until we hit
+   * stopEl, another heading, or run out. Used by extractContentUnderHeading.
+   */
+  private walkSiblingsForContent(
+    startEl: HTMLElement,
+    stopEl: HTMLElement | null
+  ): string {
+    const parts: string[] = [];
+    let current = startEl.nextElementSibling;
+
+    while (current && current !== stopEl) {
+      if (current.tagName.match(/^H[1-6]$/)) break;
+      if (current.tagName === 'IFRAME' || (current as HTMLElement).closest?.('iframe')) {
+        current = current.nextElementSibling;
+        continue;
+      }
+
+      let text: string | null = null;
+      if (current.tagName === 'TABLE') {
+        text = this.extractTableText(current as HTMLElement);
+      } else if (current.textContent?.trim()) {
+        text = extractTextContent(current as HTMLElement);
+      }
+      if (text) parts.push(text);
+
+      current = current.nextElementSibling;
+    }
+
+    return parts.join(' ');
+  }
+
+  /**
+   * Extract content under a heading until next heading.
+   *
+   * Primary strategy: walk siblings of the heading.
+   * Fallback (for card/wrapper layouts like
+   *   `<div><h3>Title</h3></div><div class="body"><p>Content</p></div>`):
+   * if the primary walk finds nothing, climb to the heading's parent and walk
+   * ITS siblings — the content is in a sibling container, not a sibling node.
    */
   private extractContentUnderHeading(
     heading: HTMLElement,
     nextHeading: HTMLElement | null
   ): string {
-    const content: string[] = [];
-    let current = heading.nextElementSibling;
+    let content = this.walkSiblingsForContent(heading, nextHeading);
 
-    while (current && current !== nextHeading) {
-      if (current.tagName.match(/^H[1-6]$/)) {
-        // Found nested heading, stop here
-        break;
+    if (!content.trim()) {
+      const parent = heading.parentElement;
+      if (parent && parent !== heading.ownerDocument?.body) {
+        content = this.walkSiblingsForContent(parent, nextHeading);
       }
-
-      // Skip iframes and their content
-      if (current.tagName === 'IFRAME') {
-        current = current.nextElementSibling;
-        continue;
-      }
-      // Skip elements inside iframes
-      if ((current as HTMLElement).closest && (current as HTMLElement).closest('iframe')) {
-        current = current.nextElementSibling;
-        continue;
-      }
-
-      if (current.tagName === 'P') {
-        const text = extractTextContent(current as HTMLElement);
-        if (text) content.push(text);
-      } else if (current.tagName === 'UL' || current.tagName === 'OL') {
-        // Handle lists - extract text from list
-        const listText = extractTextContent(current as HTMLElement);
-        if (listText) content.push(listText);
-      } else if (current.tagName === 'TABLE') {
-        // Special handling for tables
-        const tableText = this.extractTableText(current as HTMLElement);
-        if (tableText) content.push(tableText);
-      } else if (current.textContent?.trim()) {
-        const text = extractTextContent(current as HTMLElement);
-        if (text) content.push(text);
-      }
-
-      current = current.nextElementSibling;
     }
 
-    return removeLinks(content.join(' ').trim());
+    return removeLinks(content.trim());
   }
 
   /**
@@ -371,52 +495,41 @@ export class DomChunker {
     const chunks: Chunk[] = [];
     const headingSet = new Set(headings);
     
-    // Find all substantial content elements (paragraphs, sections, articles, divs with content)
-    const contentSelectors = [
-      'p',
-      'section:not(:has(h1, h2, h3, h4, h5, h6))',
-      'article:not(:has(h1, h2, h3, h4, h5, h6))',
-      'div[class*="content"]:not(:has(h1, h2, h3, h4, h5, h6))',
-      'div[class*="text"]:not(:has(h1, h2, h3, h4, h5, h6))'
-    ];
-    
+    // Build the "covered by heading chunks" set ONCE — O(N) — instead of
+    // re-traversing every heading's sibling chain for every candidate (O(N²)).
+    const covered = new Set<Element>();
+    for (const heading of headings) {
+      covered.add(heading);
+      const next = findNextHeading(heading, mainContent);
+      let cur = heading.nextElementSibling;
+      while (cur && cur !== next) {
+        covered.add(cur);
+        cur.querySelectorAll('*').forEach(d => covered.add(d));
+        cur = cur.nextElementSibling;
+      }
+    }
+
     // Get all potential content elements
     const allElements = Array.from(mainContent.querySelectorAll('*')) as HTMLElement[];
     const contentElements = allElements.filter(element => {
-      // Skip if not visible
       if (!isVisible(element)) return false;
-      
-      // Skip if inside iframe
       if (element.closest('iframe')) return false;
-      
-      // Skip if it's a heading
       if (headingSet.has(element)) return false;
-      
-      // Skip if it's inside a heading's content area
-      // (content under headings is already captured by heading-based chunking)
-      for (const heading of headings) {
-        const nextHeading = findNextHeading(heading, mainContent);
-        let current = heading.nextElementSibling;
-        while (current && current !== nextHeading) {
-          if (current === element || current.contains(element)) {
-            return false; // This element is already covered by a heading chunk
-          }
-          current = current.nextElementSibling;
-        }
+      if (covered.has(element)) return false;
+
+      // Skip if any ancestor is covered (element is inside a heading chunk's tree)
+      let parent = element.parentElement;
+      while (parent && parent !== mainContent) {
+        if (covered.has(parent)) return false;
+        parent = parent.parentElement;
       }
-      
-      // Check if element has substantial text content
+
       const text = extractTextContent(element);
-      if (!text || text.trim().length < 50) return false; // Minimum 50 chars
-      
-      // Prefer semantic elements or elements with substantial content
+      if (!text || text.trim().length < 50) return false;
+
       const tagName = element.tagName.toLowerCase();
-      if (tagName === 'p' || tagName === 'section' || tagName === 'article' || 
-          tagName === 'div' || tagName === 'main' || tagName === 'aside') {
-        return true;
-      }
-      
-      return false;
+      return (tagName === 'p' || tagName === 'section' || tagName === 'article' ||
+              tagName === 'div' || tagName === 'main' || tagName === 'aside');
     });
     
     // Group nearby content elements into chunks

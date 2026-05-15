@@ -978,10 +978,31 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (event.data.type === 'STREAMING_COMPLETE') {
         // Complete streaming - will be handled by the main response handler
         console.log('[Sidebar] Streaming completed');
+      } else if (event.data.type === 'INDEX_READY') {
+        updateIndexStatus(event.data.mode, event.data.chunkCount);
       }
     }
   });
 });
+
+/**
+ * Update the index status badge based on which indexing phase has completed.
+ * Phase 1 ('text'): BM25 keyword search is ready — user can query immediately.
+ * Phase 2 ('semantic'): embeddings done — hybrid search active for best results.
+ */
+function updateIndexStatus(mode: 'text' | 'semantic', chunkCount?: number): void {
+  const badge = document.getElementById('index-status-badge');
+  if (!badge) return;
+  if (mode === 'text') {
+    badge.textContent = `⚡ Quick search ready${chunkCount ? ` (${chunkCount})` : ''}`;
+    badge.className = 'index-status-badge ready-text';
+  } else if (mode === 'semantic') {
+    badge.textContent = '✓ Ready';
+    badge.className = 'index-status-badge ready-semantic';
+    // Auto-hide after 2s once fully ready
+    setTimeout(() => { badge.style.display = 'none'; }, 2000);
+  }
+}
 
 // Check if content script is available
 async function checkContentScript(tabId: number): Promise<boolean> {
