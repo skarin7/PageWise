@@ -194,10 +194,17 @@ async function loadSettings() {
   }
 }
 
+function syncProviderCards(provider: string) {
+  document.querySelectorAll<HTMLElement>('.provider-card').forEach(card => {
+    card.classList.toggle('active', card.dataset.provider === provider);
+  });
+}
+
 function updateProviderConfigVisibility() {
   if (!providerSelect || !providerConfigGroup) return;
-  
+
   const provider = providerSelect.value;
+  syncProviderCards(provider);
   
   if (provider === 'transformers') {
     // Hide all provider-specific config for transformers (default)
@@ -642,13 +649,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Provider selection handler
+  // Provider selection handler (hidden select, kept for compatibility)
   if (providerSelect) {
     providerSelect.addEventListener('change', () => {
       updateProviderConfigVisibility();
     });
   }
-  
+
+  // Provider card clicks — update the hidden select and trigger its change event
+  document.querySelectorAll<HTMLElement>('.provider-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const provider = card.dataset.provider;
+      if (provider && providerSelect) {
+        providerSelect.value = provider;
+        providerSelect.dispatchEvent(new Event('change'));
+      }
+    });
+  });
+
+  // Refresh models button
+  const refreshModelsBtn = document.getElementById('refresh-models-btn');
+  if (refreshModelsBtn) {
+    refreshModelsBtn.addEventListener('click', () => fetchProviderModels());
+  }
+
   // Re-fetch models when API URL or API key changes
   if (apiUrlInput) {
     apiUrlInput.addEventListener('blur', () => {
