@@ -888,13 +888,43 @@
       from { opacity: 0; }
       to { opacity: 1; }
     }
-    
+
+    .summarize-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      padding: 4px 10px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.2s;
+      white-space: nowrap;
+      line-height: 1.6;
+    }
+
+    .summarize-btn:hover { background: rgba(255,255,255,0.35); }
+    .summarize-btn:active { background: rgba(255,255,255,0.45); }
+
+    .history-banner {
+      font-size: 12px;
+      color: #888;
+      background: #f9f9f9;
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+      padding: 6px 12px;
+      text-align: center;
+      margin-bottom: 8px;
+      animation: fadeIn 0.3s ease-out;
+    }
+
   </style>
 </head>
 <body>
   <div class="header">
     <h1>💬 Chat with Page</h1>
     <div class="header-actions">
+      <button class="summarize-btn" id="summarize-btn" title="Summarize this page">✦ Summarize</button>
       <button class="settings-btn" id="settings-btn" title="Settings">⚙️</button>
       <button class="close-btn" id="close-btn" title="Close sidebar">×</button>
     </div>
@@ -935,6 +965,7 @@
       <form class="settings-form" id="settings-form">
         <!-- Hidden select kept for JS compatibility -->
         <select id="provider" name="provider" style="display:none">
+          <option value="chrome-ai">Chrome AI</option>
           <option value="transformers">Transformers.js</option>
           <option value="ollama">Ollama</option>
           <option value="openai">OpenAI</option>
@@ -945,7 +976,13 @@
         <div class="form-section" style="margin-top: 0;">
           <span class="form-section-label">Provider</span>
           <div class="provider-cards">
-            <button type="button" class="provider-card active" data-provider="transformers">
+            <!-- Chrome AI card: shown only when window.ai is available, set active if default -->
+            <button type="button" class="provider-card" data-provider="chrome-ai" id="chrome-ai-card" style="display:none">
+              <span class="provider-card-icon">⚡</span>
+              <span class="provider-card-name">Chrome AI</span>
+              <span class="provider-card-desc">Gemini Nano · zero setup</span>
+            </button>
+            <button type="button" class="provider-card" data-provider="transformers">
               <span class="provider-card-icon">🧠</span>
               <span class="provider-card-name">Transformers.js</span>
               <span class="provider-card-desc">Free · runs in browser</span>

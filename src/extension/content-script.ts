@@ -534,6 +534,7 @@ Answer:`;
             llmServiceOptions.apiUrl = llmConfig?.apiUrl;
             llmServiceOptions.apiKey = llmConfig?.apiKey;
           }
+          // chrome-ai needs no extra options (uses window.ai in content script context)
           
           const llmService = LocalModelService.getInstance(llmServiceOptions);
           await llmService.init();
@@ -544,8 +545,8 @@ Answer:`;
           logger.log('[ContentScript] Query:', message.query);
           logger.log('[ContentScript] Calling LLM with context length:', context.length);
           
-          // Use streaming for Ollama, non-streaming for others
-          if (provider === 'ollama') {
+          // Use streaming for Ollama, Chrome AI, OpenAI, and custom; non-streaming for transformers
+          if (provider === 'ollama' || provider === 'chrome-ai' || provider === 'openai' || provider === 'custom') {
             let streamingAnswer = '';
             
             // Send initial streaming message to sidebar via postMessage
@@ -582,7 +583,7 @@ Answer:`;
               }, '*');
             }
           } else {
-            // Non-streaming for transformers
+            // Non-streaming for transformers (local WASM model)
             answer = await llmService.generate(prompt, {
               max_new_tokens: 600,
               temperature: 0.4,
@@ -627,6 +628,50 @@ Answer:`;
     return true; // Async response
   }
   
+  if (message.type === 'CHECK_CHROME_AI') {
+    const ai = (window as any).ai;
+    if (!ai?.languageModel) {
+      sendResponse({ available: false });
+      return false;
+    }
+    ai.languageModel.capabilities()
+      .then((caps: any) => sendResponse({ available: caps?.available !== 'no' }))
+      .catch(() => sendResponse({ available: false }));
+    return true;
+  }
+
+  if (message.type === 'CHECK_CHROME_SUMMARIZER') {
+    const ai = (window as any).ai;
+    if (!ai?.summarizer) {
+      sendResponse({ available: false });
+      return false;
+    }
+    ai.summarizer.capabilities()
+      .then((caps: any) => sendResponse({ available: caps?.available !== 'no' }))
+      .catch(() => sendResponse({ available: false }));
+    return true;
+  }
+
+  if (message.type === 'SUMMARIZE_PAGE') {
+    (async () => {
+      try {
+        const ai = (window as any).ai;
+        if (!ai?.summarizer) {
+          sendResponse({ success: false, error: 'Chrome Summarizer not available' });
+          return;
+        }
+        const summarizer = await ai.summarizer.create();
+        const pageText = document.body.innerText.substring(0, 10000);
+        const summary = await summarizer.summarize(pageText);
+        summarizer.destroy();
+        sendResponse({ success: true, summary });
+      } catch (err) {
+        sendResponse({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'GET_STATUS') {
     sendResponse({
       initialized: rag?.isInitialized() || false,

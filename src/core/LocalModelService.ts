@@ -8,7 +8,7 @@ import { pipeline, env } from '@xenova/transformers';
 // Configure Transformers.js for browser extension
 env.allowLocalModels = false;
 
-export type LocalModelProvider = 'transformers' | 'ollama' | 'openai' | 'custom';
+export type LocalModelProvider = 'transformers' | 'ollama' | 'openai' | 'custom' | 'chrome-ai';
 
 export interface LocalModelOptions {
   provider?: LocalModelProvider;
@@ -120,6 +120,12 @@ export class LocalModelService {
         return;
       }
 
+      if (this.provider === 'chrome-ai') {
+        console.log('[LocalModelService] Using Chrome built-in AI provider');
+        this.initialized = true;
+        return;
+      }
+
       console.log('[LocalModelService] Loading model:', this.modelName);
       console.log('[LocalModelService] Transformers.js will automatically use cache if available...');
       
@@ -216,7 +222,15 @@ export class LocalModelService {
       return this.generateWithOllama(prompt, options);
     }
     
+    if (this.provider === 'chrome-ai') {
+      return this.generateWithChromeAI(prompt, options);
+    }
+
     if (this.provider === 'openai' || this.provider === 'custom') {
+      if (options?.onChunk && typeof chrome !== 'undefined' && chrome.runtime) {
+        const baseUrl = this.apiUrl?.endsWith('/v1') ? this.apiUrl : `${this.apiUrl}/v1`;
+        return this.generateWithOpenAICompatibleStream(`${baseUrl}/chat/completions`, prompt, options);
+      }
       return this.generateWithOpenAICompatible(prompt, options);
     }
 
@@ -430,8 +444,8 @@ export class LocalModelService {
    * Check if service is initialized
    */
   isInitialized(): boolean {
-    if (this.provider === 'ollama' || this.provider === 'openai' || this.provider === 'custom') {
-      return true; // These providers don't need initialization
+    if (this.provider === 'ollama' || this.provider === 'openai' || this.provider === 'custom' || this.provider === 'chrome-ai') {
+      return true;
     }
     return this.initialized && this.pipeline !== null;
   }
@@ -637,6 +651,110 @@ export class LocalModelService {
         }
       });
       
+      messagePort.onDisconnect.addListener(() => {
+        if (fullResponse) {
+          resolve(fullResponse.trim());
+        } else if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          reject(new Error('Stream disconnected'));
+        }
+      });
+    });
+  }
+
+  private async generateWithChromeAI(
+    prompt: string,
+    options?: {
+      max_new_tokens?: number;
+      temperature?: number;
+      top_p?: number;
+      onChunk?: (chunk: string) => void;
+    }
+  ): Promise<string> {
+    const ai = (window as any).ai;
+    if (!ai?.languageModel) {
+      throw new Error('Chrome Built-in AI not available (requires Chrome 127+)');
+    }
+
+    const session = await ai.languageModel.create({
+      systemPrompt: 'You are a helpful assistant answering questions about a webpage based on provided context. Be concise and accurate.'
+    });
+
+    try {
+      if (options?.onChunk) {
+        // promptStreaming yields cumulative text, so compute deltas
+        let fullText = '';
+        const stream = session.promptStreaming(prompt);
+        for await (const accumulated of stream) {
+          const delta = accumulated.slice(fullText.length);
+          if (delta) {
+            fullText = accumulated;
+            options.onChunk(delta);
+          }
+        }
+        return fullText.trim();
+      } else {
+        const answer = await session.prompt(prompt);
+        return answer.trim();
+      }
+    } finally {
+      session.destroy();
+    }
+  }
+
+  private async generateWithOpenAICompatibleStream(
+    chatUrl: string,
+    prompt: string,
+    options?: {
+      max_new_tokens?: number;
+      temperature?: number;
+      top_p?: number;
+      onChunk?: (chunk: string) => void;
+    }
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        reject(new Error('Chrome extension API not available'));
+        return;
+      }
+
+      const requestBody = {
+        model: this.modelName,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: options?.temperature ?? 0.4,
+        max_tokens: options?.max_new_tokens ?? 600
+      };
+
+      let fullResponse = '';
+      const messagePort = chrome.runtime.connect({ name: 'openai-stream' });
+
+      messagePort.postMessage({
+        type: 'OPENAI_STREAM_START',
+        url: chatUrl,
+        body: requestBody,
+        apiKey: this.apiKey,
+        timeout: this.requestTimeoutMs
+      });
+
+      messagePort.onMessage.addListener((response) => {
+        if (response.error) {
+          messagePort.disconnect();
+          reject(new Error(response.error));
+          return;
+        }
+
+        if (response.chunk) {
+          fullResponse += response.chunk;
+          options?.onChunk?.(response.chunk);
+        }
+
+        if (response.done) {
+          messagePort.disconnect();
+          resolve(fullResponse.trim());
+        }
+      });
+
       messagePort.onDisconnect.addListener(() => {
         if (fullResponse) {
           resolve(fullResponse.trim());
