@@ -14,10 +14,9 @@ export interface LLMConfig {
 }
 
 const DEFAULT_CONFIG: LLMConfig = {
-  enabled: false,
-  provider: 'transformers', // Use local model by default
-  model: 'Xenova/LaMini-Flan-T5-783M', // Small, fast instruction model
-  timeout: 120000 // 2 minutes timeout for extraction (handles large pages)
+  enabled: true,
+  provider: 'chrome-ai', // Gemini Nano — native, zero download, non-blocking
+  timeout: 30000
 };
 
 /**

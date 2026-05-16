@@ -2,6 +2,8 @@
  * Background Service Worker
  */
 
+import { LocalModelService } from '../core/LocalModelService';
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('PageWise extension installed');
 });
@@ -523,6 +525,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
     });
     
+    return true; // Keep channel open for async response
+  }
+
+  // Run Transformers.js (WASM) generation here in the background service worker
+  // so the content script's main thread — and the tab — stays responsive.
+  if (message.type === 'TRANSFORMERS_GENERATE') {
+    const { prompt, modelName, options } = message;
+    (async () => {
+      try {
+        const llm = LocalModelService.getInstance({
+          provider: 'transformers',
+          modelName: modelName || 'Xenova/LaMini-Flan-T5-783M',
+          requestTimeoutMs: 120_000,
+        });
+        await llm.init();
+        const result = await llm.generate(prompt, options);
+        sendResponse({ success: true, result });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('[Background] TRANSFORMERS_GENERATE failed:', msg);
+        sendResponse({ success: false, error: msg });
+      }
+    })();
     return true; // Keep channel open for async response
   }
 });

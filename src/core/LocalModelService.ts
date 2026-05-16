@@ -46,7 +46,9 @@ export class LocalModelService {
       this.ollamaUrl = options.ollamaUrl || 'http://localhost:11434/api/generate';
       this.apiUrl = options.apiUrl;
       this.apiKey = options.apiKey;
-      this.requestTimeoutMs = options.requestTimeoutMs ?? 20000;
+      // WASM inference needs more time than network requests; give it 90s by default.
+      const defaultTimeout = this.provider === 'transformers' ? 90_000 : 20_000;
+      this.requestTimeoutMs = options.requestTimeoutMs ?? defaultTimeout;
     }
   }
 
@@ -255,7 +257,13 @@ export class LocalModelService {
       console.log('[LocalModelService] Prompt length:', prompt.length);
       console.log('[LocalModelService] Prompt (first 300 chars):', prompt.substring(0, 300));
 
-      const result = await this.pipeline(prompt, generationOptions);
+      const timeoutMs = this.requestTimeoutMs ?? 60_000;
+      const result = await Promise.race([
+        this.pipeline(prompt, generationOptions),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Transformers generation timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+        )
+      ]);
       
       console.log('[LocalModelService] Raw result:', result);
       

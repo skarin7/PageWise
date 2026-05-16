@@ -9,6 +9,29 @@ import { getLLMConfig } from '../utils/llmContentExtraction';
 import { EmbeddingService } from '../core/EmbeddingService';
 import type { SearchResult } from '../types';
 
+// Route WASM generation through the background service worker so the content
+// script's main thread (and the tab) stays responsive during inference.
+function generateViaBackground(
+  prompt: string,
+  modelName: string,
+  options: { max_new_tokens?: number; temperature?: number; top_p?: number }
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type: 'TRANSFORMERS_GENERATE', prompt, modelName, options },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else if (response?.success) {
+          resolve(response.result as string);
+        } else {
+          reject(new Error(response?.error || 'Background generation failed'));
+        }
+      }
+    );
+  });
+}
+
 // Inject highlight styles
 const style = document.createElement('style');
 style.textContent = `
@@ -509,9 +532,20 @@ Answer:`;
           // Use the same LLM config that's used for content extraction
           const llmConfig = await getLLMConfig().catch(() => null);
           
-          // Use the configured provider, or default to transformers
-          // This ensures the same config is used for both extraction and search/RAG
+          // If LLM is explicitly disabled, skip generation and show chunks directly.
           const provider = llmConfig?.provider || 'transformers';
+          if (llmConfig?.enabled === false) {
+            const snippet = validChunks.slice(0, 3)
+              .map(r => (r.chunk.metadata?.raw_text || r.chunk.text).trim())
+              .join('\n\n---\n\n');
+            sendResponse({
+              success: true,
+              results,
+              answer: `Here's what I found on this page:\n\n${snippet}\n\n_LLM is disabled — enable it in the extension options for AI-generated answers._`,
+              citations: { citations: [] }
+            });
+            return;
+          }
           
           logger.log('[ContentScript] Using LLM config for search/RAG:', {
             provider,
@@ -537,7 +571,10 @@ Answer:`;
           // chrome-ai needs no extra options (uses window.ai in content script context)
           
           const llmService = LocalModelService.getInstance(llmServiceOptions);
-          await llmService.init();
+          // transformers generation runs in the worker — skip main-thread init.
+          if (provider !== 'transformers') {
+            await llmService.init();
+          }
           
           // Log the prompt for debugging
           logger.log('[ContentScript] LLM Prompt length:', prompt.length, 'characters');
@@ -583,20 +620,31 @@ Answer:`;
               }, '*');
             }
           } else {
-            // Non-streaming for transformers (local WASM model)
-            answer = await llmService.generate(prompt, {
-              max_new_tokens: 600,
-              temperature: 0.4,
-              top_p: 0.9
-            });
+            // Run WASM inference in the background service worker so the tab stays
+            // responsive. 200 tokens keeps generation time to ~15-30s.
+            answer = await generateViaBackground(
+              prompt,
+              llmConfig?.model || 'Xenova/LaMini-Flan-T5-783M',
+              { max_new_tokens: 200, temperature: 0.4, top_p: 0.9 }
+            );
           }
           
           logger.log('[ContentScript] LLM answer generated, length:', answer.length, 'characters');
           logger.log('[ContentScript] LLM answer:', answer);
         } catch (error) {
           console.error('[ContentScript] LLM generation failed:', error);
-          // Continue without answer - will show chunks only
-          logger.warn('LLM generation failed, falling back to chunks only');
+          const errMsg = error instanceof Error ? error.message : String(error);
+          const isChromeAIUnavailable =
+            errMsg.includes('Chrome Built-in AI') || errMsg.includes('languageModel');
+          if (isChromeAIUnavailable) {
+            // Chrome AI not enabled — surface the chunk text so the user still
+            // gets useful output, and explain how to enable it.
+            const snippet = validChunks.slice(0, 3)
+              .map(r => (r.chunk.metadata?.raw_text || r.chunk.text).trim())
+              .join('\n\n---\n\n');
+            answer = `${snippet}\n\n_Chrome built-in AI (Gemini Nano) is not available on this device. To enable it: go to \`chrome://flags\`, enable "Prompt API for Gemini Nano", then relaunch Chrome. Alternatively, configure Ollama or OpenAI in the extension options._`;
+          }
+          // For other providers, answer stays null and the sidebar shows the sources list.
         }
         
         // Generate citation mapping if we have an answer

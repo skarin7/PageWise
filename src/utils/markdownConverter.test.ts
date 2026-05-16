@@ -35,7 +35,7 @@ describe('htmlToMarkdown', () => {
       [4, '#### '],
       [5, '##### '],
       [6, '###### '],
-    ])('converts h%i to the correct markdown prefix', (level, prefix) => {
+    ])('converts h%i to the correct markdown prefix', (level: number, prefix: string) => {
       const md = htmlToMarkdown(wrap(el(`h${level}`, 'Hello')));
       expect(md).toContain(`${prefix}Hello`);
     });
@@ -217,7 +217,7 @@ describe('htmlToMarkdown', () => {
   describe('filtered elements', () => {
     it.each(['script', 'style', 'noscript', 'meta', 'link'])(
       'produces no output for <%s> elements when nested inside a container',
-      tag => {
+      (tag: string) => {
         const inner = el(tag, 'should not appear');
         expect(htmlToMarkdown(wrap(inner)).trim()).toBe('');
       },

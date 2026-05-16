@@ -368,9 +368,12 @@ export class VectorStore {
 
     const {
       limit = 10,
-      threshold = 0.7,
       hybrid = true
     } = options;
+
+    // On sparse pages (few chunks) use a low floor so results aren't silently dropped.
+    const sparseMode = this.chunkCache.size <= 5;
+    const threshold = options.threshold ?? (sparseMode ? 0.2 : 0.5);
 
     try {
       // Step 1: Keyword search using Orama (BM25)
