@@ -1,13 +1,231 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>PageRAG Options</title>
+  <meta charset="UTF-8">
+  <title>BrowseIQ Setup</title>
+  <link rel="stylesheet" href="tokens.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: var(--surface-1);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 48px 24px;
+    }
+
+    .page {
+      max-width: 620px;
+      margin: 0 auto;
+    }
+
+    .hero {
+      background: var(--brand-gradient);
+      color: white;
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+    .hero p { font-size: 14px; opacity: 0.92; line-height: 1.5; }
+
+    .card {
+      background: var(--surface-0);
+      border: 1px solid var(--surface-3);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 8px;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .badge-required { background: var(--accent-tint-weak); color: var(--accent); }
+    .badge-optional { background: var(--surface-2); color: var(--text-secondary); }
+
+    .card-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    .card-desc strong { color: var(--text-primary); }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 9px 18px;
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--brand-gradient);
+      color: white;
+    }
+
+    .btn-primary:hover { opacity: 0.92; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-ghost {
+      background: var(--surface-2);
+      color: var(--text-primary);
+    }
+
+    .btn-ghost:hover { background: var(--surface-3); }
+
+    .status-line {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-line.done { color: var(--success-fg); font-weight: 500; }
+    .status-line.error { color: var(--error-fg); }
+
+    .progress-track {
+      width: 100%;
+      height: 6px;
+      background: var(--surface-2);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .progress-track.active { display: block; }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--brand-gradient);
+      width: 0%;
+      transition: width 0.2s ease-out;
+    }
+
+    .checkmark {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--success-bg);
+      color: var(--success-fg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .footer-note {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 24px;
+      line-height: 1.6;
+    }
+
+    .footer-note a { color: var(--accent); text-decoration: none; }
+    .footer-note a:hover { text-decoration: underline; }
+  </style>
 </head>
 <body>
-    <h1>PageRAG Options</h1>
-    <p>Settings and configuration will go here</p>
-    <script src="options.js"></script>
+  <div class="page">
+    <div class="hero">
+      <h1>Welcome to BrowseIQ</h1>
+      <p>
+        BrowseIQ runs entirely in your browser — chunking, embedding, and generation all
+        happen locally via WASM. Nothing about the pages you read leaves your machine.
+        That means the first time you use a feature, its model needs to download once and
+        gets cached for every page after that.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🔍 Search model</span>
+        <span class="badge badge-required">Required · ~23 MB</span>
+      </div>
+      <p class="card-desc">
+        <strong>all-MiniLM-L6-v2</strong> powers semantic search and page chunking — the
+        core of every feature in BrowseIQ, regardless of which AI provider you use for
+        answers. Small and fast; downloads once, cached for 7 days, reused across every
+        page and tab.
+      </p>
+      <div class="card-footer">
+        <button class="btn btn-primary" id="download-search-btn">Download now</button>
+        <div style="flex: 1;">
+          <div class="status-line" id="search-status">Not downloaded yet</div>
+          <div class="progress-track" id="search-progress-track">
+            <div class="progress-fill" id="search-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">💬 Generation model</span>
+        <span class="badge badge-optional">Optional · ~300 MB</span>
+      </div>
+      <p class="card-desc">
+        <strong>LaMini-Flan-T5</strong> generates chat answers fully offline, if you pick
+        "Transformers.js" as your provider in Settings. Skip this if you'd rather use
+        Chrome's built-in AI, Ollama, or OpenAI instead — those don't need this download.
+      </p>
+      <div class="card-footer">
+        <button class="btn btn-primary" id="download-gen-btn">Download now</button>
+        <button class="btn btn-ghost" id="skip-gen-btn">Skip for now</button>
+        <div style="flex: 1;">
+          <div class="status-line" id="gen-status">Not downloaded yet</div>
+          <div class="progress-track" id="gen-progress-track">
+            <div class="progress-fill" id="gen-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="footer-note">
+      Skipped a download? No problem — it'll happen automatically the first time you use
+      that feature, you'll just wait a bit longer on that first question.
+      You can revisit this page anytime from the extension's options.
+    </p>
+  </div>
+
+  <script src="options.js"></script>
 </body>
 </html>
-

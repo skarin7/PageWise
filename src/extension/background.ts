@@ -3,10 +3,46 @@
  */
 
 import { LocalModelService } from '../core/LocalModelService';
+import { CorpusStore } from '../core/CorpusStore';
+import { CategoryEngine } from '../core/CategoryEngine';
+import { EmbeddingService } from '../core/EmbeddingService';
+import type { CorpusPage, CorpusChunk, CorpusTimeWindow } from '../types';
 
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('PageWise extension installed');
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('BrowseIQ extension installed');
+  if (details.reason === 'install') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
+  }
 });
+
+const corpusStore = CorpusStore.getInstance();
+
+// CSP-blocked fetches reject with the same generic "TypeError: Failed to
+// fetch" as a real network failure - there's no distinguishing error code.
+// SecurityPolicyViolationEvent is the only reliable signal, so we record the
+// last one and let error handlers check "did this just happen" to pick a
+// useful message instead of a dead-end "failed to fetch".
+let lastCspViolation: { blockedUri: string; violatedDirective: string; at: number } | null = null;
+
+self.addEventListener('securitypolicyviolation', (event: any) => {
+  lastCspViolation = {
+    blockedUri: event.blockedURI,
+    violatedDirective: event.violatedDirective,
+    at: Date.now()
+  };
+  console.warn('[Background] CSP violation:', lastCspViolation);
+});
+
+function describeFetchError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const isFetchFailure = message.includes('Failed to fetch') || message.includes('NetworkError');
+
+  if (isFetchFailure && lastCspViolation && Date.now() - lastCspViolation.at < 5000) {
+    return "Model download was blocked by the browser's security policy. This usually means the model provider changed servers and the extension needs an update. Try Chrome AI or Ollama in Settings instead, or check for a BrowseIQ update.";
+  }
+
+  return message;
+}
 
 // Handle long-lived connections for streaming
 chrome.runtime.onConnect.addListener((port) => {
@@ -528,6 +564,131 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 
+  // --- Corpus (cross-page memory) handlers ---
+
+  if (message.type === 'CORPUS_STORE_PAGE') {
+    const { page, chunks } = message as { page: CorpusPage; chunks: CorpusChunk[] };
+    (async () => {
+      try {
+        const categories = await corpusStore.getAllCategories();
+        const { categoryId, categories: updatedCategories } = CategoryEngine.assignCategory(
+          page,
+          chunks,
+          categories
+        );
+        page.categoryId = categoryId;
+
+        await corpusStore.storePage(page, chunks);
+        for (const category of updatedCategories) {
+          await corpusStore.putCategory(category);
+        }
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('[Background] CORPUS_STORE_PAGE failed:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_SEARCH') {
+    const { query, limit, threshold } = message as { query: string; limit?: number; threshold?: number };
+    (async () => {
+      try {
+        const embedder = EmbeddingService.getInstance();
+        await embedder.init();
+        const queryEmbedding = await embedder.embed(query);
+        const results = await corpusStore.searchWithEmbedding(query, queryEmbedding, { limit, threshold });
+        sendResponse({ success: true, results });
+      } catch (error) {
+        console.error('[Background] CORPUS_SEARCH failed:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_LIST') {
+    const { window, categoryId } = message as { window?: CorpusTimeWindow; categoryId?: string };
+    (async () => {
+      try {
+        const pages = await corpusStore.listPages(window || 'all', categoryId);
+        const categories = await corpusStore.getAllCategories();
+        sendResponse({ success: true, pages, categories });
+      } catch (error) {
+        console.error('[Background] CORPUS_LIST failed:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_DELETE_PAGE') {
+    const { url } = message as { url: string };
+    (async () => {
+      try {
+        await corpusStore.deletePage(url);
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_CLEAR') {
+    (async () => {
+      try {
+        await corpusStore.clearAll();
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_STATS') {
+    (async () => {
+      try {
+        const stats = await corpusStore.getStorageStats();
+        sendResponse({ success: true, stats });
+      } catch (error) {
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  // Reading history lives in extension-origin IndexedDB, which Chrome wipes
+  // on uninstall/reinstall. Export/import is the only way it survives that.
+  if (message.type === 'CORPUS_EXPORT') {
+    (async () => {
+      try {
+        const snapshot = await corpusStore.exportAll();
+        sendResponse({ success: true, snapshot });
+      } catch (error) {
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CORPUS_IMPORT') {
+    const { snapshot } = message as { snapshot: { pages: CorpusPage[]; chunks: CorpusChunk[]; categories: any[] } };
+    (async () => {
+      try {
+        await corpusStore.importAll(snapshot);
+        const stats = await corpusStore.getStorageStats();
+        sendResponse({ success: true, stats });
+      } catch (error) {
+        sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
+
   // Run Transformers.js (WASM) generation here in the background service worker
   // so the content script's main thread — and the tab — stays responsive.
   if (message.type === 'TRANSFORMERS_GENERATE') {
@@ -543,12 +704,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const result = await llm.generate(prompt, options);
         sendResponse({ success: true, result });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
+        const msg = describeFetchError(error);
         console.error('[Background] TRANSFORMERS_GENERATE failed:', msg);
         sendResponse({ success: false, error: msg });
       }
     })();
     return true; // Keep channel open for async response
+  }
+
+  // First-run onboarding: pre-download the generation model so the user's
+  // first real question doesn't stall on a ~300MB fetch. Progress is
+  // broadcast so the options page (or any listener) can show a bar.
+  if (message.type === 'DOWNLOAD_GENERATION_MODEL') {
+    const { modelName } = message as { modelName?: string };
+    (async () => {
+      try {
+        const llm = LocalModelService.getInstance({
+          provider: 'transformers',
+          modelName: modelName || 'Xenova/LaMini-Flan-T5-783M',
+          requestTimeoutMs: 300_000,
+        });
+        await llm.init((percent) => {
+          chrome.runtime.sendMessage({ type: 'MODEL_DOWNLOAD_PROGRESS', model: 'generation', percent }).catch(() => {});
+        });
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: describeFetchError(error) });
+      }
+    })();
+    return true;
   }
 });
 

@@ -1,0 +1,86 @@
+/* Design tokens - light by default, dark via prefers-color-scheme or [data-theme] */
+
+:root {
+  --brand-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --accent: #667eea;
+  --accent-hover: #764ba2;
+  --accent-tint-weak: rgba(102, 126, 234, 0.1);
+  --accent-tint: rgba(102, 126, 234, 0.15);
+  --accent-tint-strong: rgba(102, 126, 234, 0.3);
+
+  --surface-0: #ffffff;   /* page/body background */
+  --surface-1: #f9f9f9;   /* cards, sources, subtle panels */
+  --surface-2: #f0f0f0;   /* assistant bubble, hovers */
+  --surface-3: #e0e0e0;   /* borders, dividers */
+
+  --text-primary: #262626;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+
+  --success-bg: #e8f5e9;
+  --success-fg: #2e7d32;
+  --warning-bg: #fff3e0;
+  --warning-fg: #e65100;
+  --error-bg: #ffebee;
+  --error-fg: #c62828;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 8px rgba(102, 126, 234, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: #1e1e22;
+    --surface-1: #26262b;
+    --surface-2: #2f2f35;
+    --surface-3: #3d3d44;
+
+    --text-primary: #ededf0;
+    --text-secondary: #a8a8b0;
+    --text-tertiary: #77777f;
+
+    --success-bg: #1c3a25;
+    --success-fg: #6fcf85;
+    --warning-bg: #3a2c14;
+    --warning-fg: #f0a94e;
+    --error-bg: #3a1c1f;
+    --error-fg: #f28b8b;
+
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --surface-0: #1e1e22;
+  --surface-1: #26262b;
+  --surface-2: #2f2f35;
+  --surface-3: #3d3d44;
+
+  --text-primary: #ededf0;
+  --text-secondary: #a8a8b0;
+  --text-tertiary: #77777f;
+
+  --success-bg: #1c3a25;
+  --success-fg: #6fcf85;
+  --warning-bg: #3a2c14;
+  --warning-fg: #f0a94e;
+  --error-bg: #3a1c1f;
+  --error-fg: #f28b8b;
+
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+}

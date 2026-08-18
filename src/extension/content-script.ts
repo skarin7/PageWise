@@ -7,7 +7,9 @@ import { logger } from '../utils/logger';
 import { LocalModelService } from '../core/LocalModelService';
 import { getLLMConfig } from '../utils/llmContentExtraction';
 import { EmbeddingService } from '../core/EmbeddingService';
-import type { SearchResult } from '../types';
+import { AttentionTracker, computeAttentionScore } from '../core/AttentionTracker';
+import { CategoryEngine } from '../core/CategoryEngine';
+import type { SearchResult, CorpusPage, CorpusChunk } from '../types';
 
 // Route WASM generation through the background service worker so the content
 // script's main thread (and the tab) stays responsive during inference.
@@ -54,33 +56,26 @@ style.textContent = `
     }
   }
   
-  /* Sidebar styles */
+  /* Sidebar styles - docked full-height panel */
   #rag-sidebar-container {
     position: fixed;
-    top: 50px;
-    right: 15px;
-    width: 400px;
-    height: 350px; /* Default fixed height - more compact */
-    max-height: 100vh; /* Don't exceed viewport */
+    top: 0;
+    right: 0;
+    width: 420px;
+    height: 100vh;
     z-index: 2147483647;
     background: white;
     box-shadow: -2px 0 10px rgba(0,0,0,0.2);
     display: none;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    border-radius: 8px 0 0 8px;
     overflow: hidden;
-    transition: height 0.3s ease-out;
   }
-  
+
   #rag-sidebar-container.visible {
     display: block;
   }
-  
-  #rag-sidebar-container.expanded {
-    height: calc(100vh - 60px);
-  }
-  
-  /* Resize handles */
+
+  /* Resize handle (width only - height is always full viewport) */
   #rag-sidebar-resize-handle {
     position: absolute;
     left: 0;
@@ -92,44 +87,15 @@ style.textContent = `
     z-index: 10;
     transition: background 0.2s;
   }
-  
+
   #rag-sidebar-resize-handle:hover {
     background: #667eea;
   }
-  
+
   #rag-sidebar-resize-handle:active {
     background: #764ba2;
   }
-  
-  /* Height resize handle (top bar) - exclude close button area */
-  #rag-sidebar-container .resize-height-handle {
-    position: relative;
-    top: 0;
-    left: 0;
-    right: 50px; /* Leave space for close button */
-    height: 40px;
-    z-index: 5;
-    background: transparent;
-    pointer-events: auto;
-  }
-  
-  #rag-sidebar-container .resize-height-handle:hover {
-    background: rgba(102, 126, 234, 0.1);
-  }
-  
-  /* Corner resize handle (for diagonal resize) - smaller, doesn't overlap close button */
-  #rag-sidebar-container .resize-corner-handle {
-    position: absolute;
-    top: 0;
-    right: 50px; /* Leave space for close button */
-    width: 20px;
-    height: 20px;
-    cursor: nwse-resize;
-    z-index: 5;
-    background: transparent;
-    pointer-events: auto;
-  }
-  
+
   /* Ensure iframe and its content can receive pointer events */
   #rag-sidebar-iframe {
     pointer-events: auto;
@@ -156,6 +122,111 @@ document.head.appendChild(style);
 let rag: PageRAG | null = null;
 let isInitializing = false;
 let sidebarContainer: HTMLDivElement | null = null;
+
+// --- Cross-page memory: attention tracking ---
+
+const CORPUS_EXCLUDED_PROTOCOLS = ['chrome-extension:', 'chrome:', 'file:', 'about:'];
+const CORPUS_DOMAIN_BLOCKLIST = [
+  'mail.google.com', 'outlook.office.com', 'outlook.live.com',
+  'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'paypal.com'
+];
+
+function isCorpusEligible(): boolean {
+  if (CORPUS_EXCLUDED_PROTOCOLS.includes(window.location.protocol)) return false;
+  if (chrome.extension?.inIncognitoContext) return false;
+  const hostname = window.location.hostname;
+  if (CORPUS_DOMAIN_BLOCKLIST.some(blocked => hostname === blocked || hostname.endsWith(`.${blocked}`))) {
+    return false;
+  }
+  return true;
+}
+
+let attentionTracker: AttentionTracker | null = null;
+
+async function flushPageToCorpus(): Promise<void> {
+  if (!rag || !attentionTracker) return;
+
+  const chunks = rag.getChunks();
+  if (chunks.length === 0) return;
+
+  const embeddingMap = rag.getChunkEmbeddings();
+  if (!embeddingMap || embeddingMap.size === 0) {
+    // Phase 2 embeddings not ready yet - retry shortly rather than storing
+    // a page with no vectors (it would never surface in corpus search).
+    setTimeout(() => flushPageToCorpus(), 3000);
+    return;
+  }
+
+  const corpusChunks: CorpusChunk[] = [];
+  const chunkEmbeddings: number[][] = [];
+  for (const chunk of chunks) {
+    const embedding = embeddingMap.get(chunk.id);
+    if (!embedding) continue;
+    corpusChunks.push({ ...chunk, embedding });
+    chunkEmbeddings.push(embedding);
+  }
+  if (corpusChunks.length === 0) return;
+
+  const snapshot = attentionTracker.snapshot();
+  const page: CorpusPage = {
+    url: window.location.href,
+    title: document.title,
+    favicon: getFaviconUrl(),
+    hostname: window.location.hostname,
+    firstSeen: Date.now(),
+    lastSeen: Date.now(),
+    attentionScore: computeAttentionScore(snapshot),
+    attention: snapshot,
+    contentHash: '',
+    pageEmbedding: CategoryEngine.computePageEmbedding(chunkEmbeddings),
+    chunkIds: corpusChunks.map(c => c.id)
+  };
+
+  chrome.runtime.sendMessage(
+    { type: 'CORPUS_STORE_PAGE', page, chunks: corpusChunks },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        logger.warn('[Corpus] Failed to store page:', chrome.runtime.lastError.message);
+        return;
+      }
+      if (response?.success) {
+        logger.log('[Corpus] Page stored:', page.url, 'score:', page.attentionScore.toFixed(2));
+      } else {
+        logger.warn('[Corpus] Store rejected:', response?.error);
+      }
+    }
+  );
+}
+
+function getFaviconUrl(): string | undefined {
+  const link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+  if (link?.href) return link.href;
+  return `${window.location.origin}/favicon.ico`;
+}
+
+function startAttentionTracking(): void {
+  if (!isCorpusEligible()) return;
+  if (attentionTracker) return; // already tracking this page load
+
+  attentionTracker = new AttentionTracker();
+  attentionTracker.start(() => {
+    flushPageToCorpus();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && attentionTracker?.hasPassedGate()) {
+      flushPageToCorpus();
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    if (attentionTracker?.hasPassedGate()) flushPageToCorpus();
+  });
+}
+
+function stopAttentionTracking(): void {
+  attentionTracker?.stop();
+  attentionTracker = null;
+}
 
 // Sidebar management - Define constants and functions before they're used
 const SIDEBAR_STORAGE_KEY = 'rag_sidebar_open';
@@ -407,7 +478,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     // Get sender tab ID for streaming updates
     const senderTabId = sender.tab?.id;
-    
+    attentionTracker?.markUserSearched();
+
     rag.search(message.query, message.options)
       .then(async results => {
         logger.log('[ContentScript] Search returned results:', results.length);
@@ -850,11 +922,13 @@ if (document.readyState === 'loading') {
     logger.log('[PageRAG] DOM loaded, initializing...');
     initRAG();
     restoreSidebarState();
+    startAttentionTracking();
   });
 } else {
   logger.log('[PageRAG] DOM already ready, initializing...');
   initRAG();
   restoreSidebarState();
+  startAttentionTracking();
 }
 
 // Re-initialize on SPA navigation (with debounce)
@@ -874,7 +948,9 @@ new MutationObserver(() => {
     navigationTimeout = setTimeout(() => {
       logger.log('[PageRAG] URL changed, re-initializing...');
       rag = null;
+      stopAttentionTracking();
       initRAG();
+      startAttentionTracking();
     }, 500);
   }
 }).observe(document, { subtree: true, childList: true });
@@ -900,39 +976,24 @@ function createSidebar(): HTMLDivElement {
   
   const container = document.createElement('div');
   container.id = 'rag-sidebar-container';
-  
-  // Create resize handles
+
+  // Width-only resize handle (docked panel is always full viewport height)
   const resizeHandle = document.createElement('div');
   resizeHandle.id = 'rag-sidebar-resize-handle';
-  
-  // Height resize handle (top bar - draggable)
-  const resizeHeightHandle = document.createElement('div');
-  resizeHeightHandle.className = 'resize-height-handle';
-  
-  // Corner resize handle (top-right corner)
-  const resizeCornerHandle = document.createElement('div');
-  resizeCornerHandle.className = 'resize-corner-handle';
-  
+
   const iframe = document.createElement('iframe');
   iframe.id = 'rag-sidebar-iframe';
   iframe.src = chrome.runtime.getURL('sidebar.html');
-  
+
   container.appendChild(resizeHandle);
-  container.appendChild(resizeHeightHandle);
-  container.appendChild(resizeCornerHandle);
   container.appendChild(iframe);
   document.body.appendChild(container);
-  
-  // Add resize functionality
+
+  // Add resize functionality (width only, clamped 320-720px)
   let isResizingWidth = false;
-  let isResizingHeight = false;
-  let isResizingCorner = false;
   let startX = 0;
-  let startY = 0;
   let startWidth = 0;
-  let startHeight = 0;
-  
-  // Width resize (left edge)
+
   resizeHandle.addEventListener('mousedown', (e) => {
     isResizingWidth = true;
     startX = e.clientX;
@@ -942,100 +1003,24 @@ function createSidebar(): HTMLDivElement {
     e.preventDefault();
     e.stopPropagation();
   });
-  
-  // Height resize (top bar) - only on left side, not near close button
-  resizeHeightHandle.addEventListener('mousedown', (e) => {
-    // Don't start resize if clicking near the right edge (where close button is)
-    if (e.clientX > container.offsetWidth - 60) {
-      return; // Let the click pass through to close button
-    }
-    isResizingHeight = true;
-    startY = e.clientY;
-    startHeight = container.offsetHeight;
-    document.body.style.cursor = 'ns-resize';
-    document.body.style.userSelect = 'none';
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  
-  // Corner resize (top-right corner - both width and height) - smaller area
-  resizeCornerHandle.addEventListener('mousedown', (e) => {
-    // Don't start resize if clicking too close to the right edge
-    if (e.clientX > container.offsetWidth - 50) {
-      return; // Let the click pass through
-    }
-    isResizingCorner = true;
-    startX = e.clientX;
-    startY = e.clientY;
-    startWidth = container.offsetWidth;
-    startHeight = container.offsetHeight;
-    document.body.style.cursor = 'nwse-resize';
-    document.body.style.userSelect = 'none';
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  
+
   document.addEventListener('mousemove', (e) => {
     if (isResizingWidth) {
       const diff = startX - e.clientX; // Negative because we're resizing from right
-      const newWidth = Math.max(300, Math.min(800, startWidth + diff)); // Min 300px, max 800px
+      const newWidth = Math.max(320, Math.min(720, startWidth + diff));
       container.style.width = `${newWidth}px`;
-      e.preventDefault();
-    } else if (isResizingHeight) {
-      const diff = e.clientY - startY; // Positive when dragging down
-      const newHeight = Math.max(300, Math.min(window.innerHeight, startHeight + diff)); // Min 300px, max viewport
-      container.style.height = `${newHeight}px`;
-      container.classList.remove('expanded'); // Remove auto-expand class when manually resized
-      e.preventDefault();
-    } else if (isResizingCorner) {
-      // Resize both width and height
-      const widthDiff = startX - e.clientX;
-      const heightDiff = e.clientY - startY;
-      const newWidth = Math.max(300, Math.min(800, startWidth + widthDiff));
-      const newHeight = Math.max(300, Math.min(window.innerHeight, startHeight + heightDiff));
-      container.style.width = `${newWidth}px`;
-      container.style.height = `${newHeight}px`;
-      container.classList.remove('expanded'); // Remove auto-expand class when manually resized
       e.preventDefault();
     }
   });
-  
+
   document.addEventListener('mouseup', () => {
-    if (isResizingWidth || isResizingHeight || isResizingCorner) {
+    if (isResizingWidth) {
       isResizingWidth = false;
-      isResizingHeight = false;
-      isResizingCorner = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     }
   });
-  
-  // Listen for messages from sidebar to auto-expand
-  // Only auto-expand if user hasn't manually resized
-  let hasManualResize = false;
-  window.addEventListener('message', (event) => {
-    // Only accept messages from our extension
-    if (event.data && event.data.type === '__RAG_SIDEBAR_EXPAND__') {
-      if (!hasManualResize) {
-        container.classList.add('expanded');
-      }
-    } else if (event.data && event.data.type === '__RAG_SIDEBAR_COLLAPSE__') {
-      if (!hasManualResize) {
-        container.classList.remove('expanded');
-      }
-    }
-  });
-  
-  // Track manual resize
-  const trackManualResize = () => {
-    hasManualResize = true;
-    container.classList.remove('expanded'); // Remove auto-expand when manually resized
-  };
-  
-  resizeHandle.addEventListener('mousedown', trackManualResize);
-  resizeHeightHandle.addEventListener('mousedown', trackManualResize);
-  resizeCornerHandle.addEventListener('mousedown', trackManualResize);
-  
+
   sidebarContainer = container;
   return container;
 }

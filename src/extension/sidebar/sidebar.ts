@@ -299,7 +299,7 @@ async function fetchProviderModels() {
   
   try {
     const response = await new Promise<{ success: boolean; models?: Array<{name: string, label: string}>; error?: string }>((resolve) => {
-      chrome.runtime.sendMessage(
+      safeSendMessage(
         {
           type: 'LIST_MODELS',
           provider: provider,
@@ -511,6 +511,62 @@ interface Message {
   };
 }
 
+// Reloading/updating the extension while a sidebar iframe is still open kills
+// its chrome.runtime handle. Every further chrome.runtime/chrome.tabs call
+// then throws synchronously with this exact message - there's no recovery,
+// the only fix is reloading the host page. We detect it once and show a
+// banner instead of leaving the UI stuck on "waiting for content script".
+let extensionContextDead = false;
+
+function isContextInvalidatedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Extension context invalidated');
+}
+
+// chrome.runtime.sendMessage throws SYNCHRONOUSLY (not via the callback's
+// lastError) once the extension context is invalidated. Every call site in
+// this file should go through this wrapper instead of calling it directly.
+function safeSendMessage(message: any, callback: (response: any) => void): void {
+  try {
+    chrome.runtime.sendMessage(message, callback);
+  } catch (error) {
+    if (isContextInvalidatedError(error)) {
+      handleContextInvalidated();
+    }
+    callback(undefined);
+  }
+}
+
+function safeTabsSendMessage(tabId: number, message: any, callback?: (response: any) => void): void {
+  try {
+    if (callback) {
+      chrome.tabs.sendMessage(tabId, message, callback);
+    } else {
+      chrome.tabs.sendMessage(tabId, message);
+    }
+  } catch (error) {
+    if (isContextInvalidatedError(error)) {
+      handleContextInvalidated();
+    }
+    callback?.(undefined);
+  }
+}
+
+function handleContextInvalidated(): void {
+  if (extensionContextDead) return;
+  extensionContextDead = true;
+
+  setStatus('⚠️ Extension was updated - reload this page to reconnect', 'error');
+  searchButton.disabled = true;
+  queryInput.disabled = true;
+
+  const banner = document.createElement('div');
+  banner.className = 'history-banner';
+  banner.style.color = 'var(--error-fg)';
+  banner.textContent = '⚠️ BrowseIQ was updated. Reload this page to keep using it.';
+  messagesContainer?.insertAdjacentElement('afterbegin', banner);
+}
+
 // Get elements
 const queryInput = document.getElementById('query-input') as HTMLInputElement;
 const searchButton = document.getElementById('search-button') as HTMLButtonElement;
@@ -639,7 +695,7 @@ async function loadPersistedConversation(url: string): Promise<void> {
 async function detectAndSetDefaultProvider(): Promise<void> {
   if (!currentTabId) return;
 
-  chrome.tabs.sendMessage(currentTabId, { type: 'CHECK_CHROME_AI' }, async (response) => {
+  safeTabsSendMessage(currentTabId, { type: 'CHECK_CHROME_AI' }, async (response) => {
     if (chrome.runtime.lastError) return;
 
     if (response?.available) {
@@ -675,14 +731,13 @@ function triggerSummarizeQuery(): void {
 function performSummarize(): void {
   if (!currentTabId) return;
 
-  chrome.tabs.sendMessage(currentTabId, { type: 'CHECK_CHROME_SUMMARIZER' }, (response) => {
+  safeTabsSendMessage(currentTabId, { type: 'CHECK_CHROME_SUMMARIZER' }, (response) => {
     if (!chrome.runtime.lastError && response?.available) {
       addMessage('user', 'Summarize this page');
       renderConversation();
       showTypingIndicator();
-      if (window.parent) window.parent.postMessage({ type: '__RAG_SIDEBAR_EXPAND__' }, '*');
 
-      chrome.tabs.sendMessage(currentTabId!, { type: 'SUMMARIZE_PAGE' }, (sumResponse) => {
+      safeTabsSendMessage(currentTabId!, { type: 'SUMMARIZE_PAGE' }, (sumResponse) => {
         hideTypingIndicator();
         if (chrome.runtime.lastError || !sumResponse?.success) {
           triggerSummarizeQuery();
@@ -721,9 +776,11 @@ document.addEventListener('DOMContentLoaded', () => {
   closeBtn.addEventListener('click', () => {
     // Send message to content script to hide sidebar
     if (currentTabId) {
-      chrome.tabs.sendMessage(currentTabId, { type: 'HIDE_SIDEBAR' });
+      safeTabsSendMessage(currentTabId, { type: 'HIDE_SIDEBAR' });
     }
   });
+
+  initTabs();
 
   // Settings button - query inside DOMContentLoaded to ensure it exists
   settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement;
@@ -1010,6 +1067,9 @@ async function checkContentScript(tabId: number): Promise<boolean> {
     await chrome.tabs.sendMessage(tabId, { type: 'PING' });
     return true;
   } catch (error) {
+    if (isContextInvalidatedError(error)) {
+      handleContextInvalidated();
+    }
     return false;
   }
 }
@@ -1025,11 +1085,12 @@ async function ensureContentScript(tabId: number): Promise<void> {
 
 // Update status
 async function updateStatus() {
-  if (!currentTabId) return;
+  if (!currentTabId || extensionContextDead) return;
 
   // Check if content script is loaded
   const isLoaded = await checkContentScript(currentTabId);
-  
+  if (extensionContextDead) return; // checkContentScript may have just detected this
+
   if (!isLoaded) {
     setStatus('⏳ Waiting for content script to load...', 'loading');
     // Content script is auto-injected via manifest.json
@@ -1040,7 +1101,8 @@ async function updateStatus() {
   }
 
   // Content script is loaded, get status
-  chrome.tabs.sendMessage(currentTabId, { type: 'GET_STATUS' }, (response) => {
+  try {
+    chrome.tabs.sendMessage(currentTabId, { type: 'GET_STATUS' }, (response) => {
     if (chrome.runtime.lastError) {
       setStatus(`⚠️ ${chrome.runtime.lastError.message}`, 'error');
       return;
@@ -1061,7 +1123,14 @@ async function updateStatus() {
       setStatus('⚠️ No response from content script', 'error');
       searchButton.disabled = true;
     }
-  });
+    });
+  } catch (error) {
+    if (isContextInvalidatedError(error)) {
+      handleContextInvalidated();
+    } else {
+      setStatus(`⚠️ ${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
+  }
 }
 
 // Set status message
@@ -1103,11 +1172,6 @@ async function handleSearch() {
   // Show typing indicator
   showTypingIndicator();
 
-  // Auto-expand sidebar when conversation starts
-  if (window.parent) {
-    window.parent.postMessage({ type: '__RAG_SIDEBAR_EXPAND__' }, '*');
-  }
-
   // Ensure content script is loaded
   const isLoaded = await checkContentScript(currentTabId);
   if (!isLoaded) {
@@ -1130,7 +1194,7 @@ async function handleSearch() {
     content: msg.content
   }));
   
-  chrome.tabs.sendMessage(
+  safeTabsSendMessage(
     currentTabId,
     {
       type: 'SEARCH',
@@ -1234,7 +1298,7 @@ function updateStreamingMessage(chunk: string, accumulated: string): void {
     currentStreamingMessage.content = accumulated;
     if (currentStreamingMessage.element) {
       // Update the content with proper formatting
-      const formattedContent = escapeHtml(accumulated).replace(/\n/g, '<br>');
+      const formattedContent = renderMarkdown(escapeHtml(accumulated));
       currentStreamingMessage.element.innerHTML = formattedContent;
       
       // Auto-scroll to bottom
@@ -1298,6 +1362,83 @@ function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// Lightweight markdown renderer for model output (bold/italic/code/lists/
+// headings/paragraphs). Input is already HTML-escaped, so inline handling
+// here only ever introduces our own safe tags.
+function renderMarkdown(escapedText: string): string {
+  const lines = escapedText.split('\n');
+  const blocks: string[] = [];
+  let listBuffer: string[] = [];
+  let listType: 'ul' | 'ol' | null = null;
+  let paraBuffer: string[] = [];
+
+  const flushList = () => {
+    if (listBuffer.length > 0 && listType) {
+      blocks.push(`<${listType}>${listBuffer.join('')}</${listType}>`);
+    }
+    listBuffer = [];
+    listType = null;
+  };
+
+  const flushPara = () => {
+    if (paraBuffer.length > 0) {
+      blocks.push(`<p>${paraBuffer.join(' ')}</p>`);
+    }
+    paraBuffer = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === '') {
+      flushPara();
+      flushList();
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,4})\s+(.*)$/);
+    if (headingMatch) {
+      flushPara();
+      flushList();
+      const level = Math.min(headingMatch[1].length + 2, 6); // ## -> h4, cap at h6
+      blocks.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+
+    if (bulletMatch) {
+      flushPara();
+      if (listType !== 'ul') { flushList(); listType = 'ul'; }
+      listBuffer.push(`<li>${inlineFormat(bulletMatch[1])}</li>`);
+      continue;
+    }
+
+    if (numberedMatch) {
+      flushPara();
+      if (listType !== 'ol') { flushList(); listType = 'ol'; }
+      listBuffer.push(`<li>${inlineFormat(numberedMatch[1])}</li>`);
+      continue;
+    }
+
+    flushList();
+    paraBuffer.push(inlineFormat(line));
+  }
+
+  flushPara();
+  flushList();
+
+  return blocks.join('');
+}
+
+function inlineFormat(text: string): string {
+  return text
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
 }
 
 // Scroll to bottom of messages
@@ -1421,8 +1562,10 @@ function renderMessage(message: Message, messageIndex: number): string {
   const timeStr = message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   
   // Parse and render citations in the content
-  let contentHtml = escapeHtml(message.content);
-  
+  let contentHtml = message.role === 'assistant'
+    ? renderMarkdown(escapeHtml(message.content))
+    : escapeHtml(message.content).replace(/\n/g, '<br>');
+
   // Replace citation markers with clickable HTML
   // Pattern: [1], [2], [1,2], etc.
   contentHtml = contentHtml.replace(
@@ -1483,9 +1626,9 @@ function renderMessage(message: Message, messageIndex: number): string {
 // Navigate to a search result
 function navigateToResult(result: any) {
   if (!currentTabId) return;
-  
+
   // Send message to content script to highlight and scroll to result
-  chrome.tabs.sendMessage(currentTabId, {
+  safeTabsSendMessage(currentTabId, {
     type: 'HIGHLIGHT_RESULT',
     chunkId: result.chunk.id
   }, (response) => {
@@ -1496,6 +1639,253 @@ function navigateToResult(result: any) {
     } else {
       console.warn('[Sidebar] Navigation failed:', response?.error || 'Unknown error');
     }
+  });
+}
+
+// --- Tab shell + Library (cross-page memory) ---
+
+type LibraryWindow = 'today' | 'week' | 'month' | 'all';
+
+let activeLibraryWindow: LibraryWindow = 'today';
+let activeLibraryCategory: string | null = null;
+let librarySearchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+function initTabs(): void {
+  const chatBtn = document.getElementById('tab-chat-btn') as HTMLButtonElement;
+  const libraryBtn = document.getElementById('tab-library-btn') as HTMLButtonElement;
+  const chatPanel = document.getElementById('tab-chat-panel') as HTMLDivElement;
+  const libraryPanel = document.getElementById('tab-library-panel') as HTMLDivElement;
+
+  chatBtn.addEventListener('click', () => {
+    chatBtn.classList.add('active');
+    libraryBtn.classList.remove('active');
+    chatPanel.classList.add('active');
+    libraryPanel.classList.remove('active');
+  });
+
+  libraryBtn.addEventListener('click', () => {
+    libraryBtn.classList.add('active');
+    chatBtn.classList.remove('active');
+    libraryPanel.classList.add('active');
+    chatPanel.classList.remove('active');
+    loadLibrary();
+  });
+
+  const windowFilters = document.getElementById('library-window-filters') as HTMLDivElement;
+  windowFilters.addEventListener('click', (e) => {
+    const target = (e.target as HTMLElement).closest('.segment-btn') as HTMLElement | null;
+    if (!target) return;
+    windowFilters.querySelectorAll('.segment-btn').forEach(el => el.classList.remove('active'));
+    target.classList.add('active');
+    activeLibraryWindow = target.dataset.window as LibraryWindow;
+    loadLibrary();
+  });
+
+  const librarySearch = document.getElementById('library-search') as HTMLInputElement;
+  librarySearch.addEventListener('input', () => {
+    if (librarySearchDebounce) clearTimeout(librarySearchDebounce);
+    librarySearchDebounce = setTimeout(() => {
+      const query = librarySearch.value.trim();
+      if (query) {
+        runLibrarySearch(query);
+      } else {
+        loadLibrary();
+      }
+    }, 300);
+  });
+
+  const exportBtn = document.getElementById('library-export-btn') as HTMLButtonElement;
+  const importBtn = document.getElementById('library-import-btn') as HTMLButtonElement;
+  const importFile = document.getElementById('library-import-file') as HTMLInputElement;
+
+  exportBtn.addEventListener('click', () => {
+    const original = exportBtn.textContent;
+    exportBtn.disabled = true;
+    safeSendMessage({ type: 'CORPUS_EXPORT' }, (response) => {
+      exportBtn.disabled = false;
+      if (chrome.runtime.lastError || !response?.success) {
+        exportBtn.textContent = 'Export failed';
+        setTimeout(() => { exportBtn.textContent = original; }, 2000);
+        return;
+      }
+      const blob = new Blob([JSON.stringify(response.snapshot, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `browseiq-library-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      exportBtn.textContent = '✓ Exported!';
+      setTimeout(() => { exportBtn.textContent = original; }, 2000);
+    });
+  });
+
+  importBtn.addEventListener('click', () => importFile.click());
+
+  importFile.addEventListener('change', async () => {
+    const file = importFile.files?.[0];
+    importFile.value = '';
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const snapshot = JSON.parse(text);
+      if (!snapshot || !Array.isArray(snapshot.pages) || !Array.isArray(snapshot.chunks)) {
+        throw new Error('Not a valid BrowseIQ library export');
+      }
+
+      const original = importBtn.textContent;
+      importBtn.disabled = true;
+      safeSendMessage({ type: 'CORPUS_IMPORT', snapshot }, (response) => {
+        importBtn.disabled = false;
+        if (chrome.runtime.lastError || !response?.success) {
+          importBtn.textContent = 'Import failed';
+        } else {
+          importBtn.textContent = `✓ Imported ${response.stats?.pageCount ?? ''} pages`;
+          loadLibrary();
+        }
+        setTimeout(() => { importBtn.textContent = original; }, 2500);
+      });
+    } catch (error) {
+      importBtn.textContent = 'Invalid file';
+      setTimeout(() => { importBtn.textContent = 'Import library'; }, 2500);
+    }
+  });
+}
+
+function loadLibrary(): void {
+  safeSendMessage(
+    { type: 'CORPUS_LIST', window: activeLibraryWindow, categoryId: activeLibraryCategory || undefined },
+    (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        renderLibraryEmpty('Could not load your reading library.');
+        return;
+      }
+      renderCategoryFilters(response.categories || []);
+      renderLibraryList(response.pages || []);
+    }
+  );
+}
+
+function runLibrarySearch(query: string): void {
+  safeSendMessage(
+    { type: 'CORPUS_SEARCH', query, limit: 20 },
+    (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        renderLibraryEmpty('Search failed.');
+        return;
+      }
+      renderLibrarySearchResults(response.results || []);
+    }
+  );
+}
+
+let categorySelectWired = false;
+
+function renderCategoryFilters(categories: Array<{ id: string; label: string; pageCount: number }>): void {
+  const select = document.getElementById('library-category-select') as HTMLSelectElement;
+
+  if (categories.length === 0) {
+    select.style.display = 'none';
+    return;
+  }
+
+  select.style.display = 'block';
+  select.innerHTML = [`<option value="">All topics</option>`]
+    .concat(categories.map(c =>
+      `<option value="${escapeHtml(c.id)}"${activeLibraryCategory === c.id ? ' selected' : ''}>${escapeHtml(c.label)} (${c.pageCount})</option>`
+    ))
+    .join('');
+
+  if (!categorySelectWired) {
+    categorySelectWired = true;
+    select.addEventListener('change', () => {
+      activeLibraryCategory = select.value || null;
+      loadLibrary();
+    });
+  }
+}
+
+function renderLibraryEmpty(message: string): void {
+  const list = document.getElementById('library-list') as HTMLDivElement;
+  list.innerHTML = `<div class="library-empty">${escapeHtml(message)}</div>`;
+}
+
+function renderLibraryList(pages: any[]): void {
+  const list = document.getElementById('library-list') as HTMLDivElement;
+
+  if (pages.length === 0) {
+    renderLibraryEmpty("Nothing indexed yet. Pages you read for 30s+ will show up here.");
+    return;
+  }
+
+  const favourites = pages.slice(0, Math.min(3, pages.length));
+  const rest = pages.slice(favourites.length);
+
+  let html = '';
+  if (favourites.length > 0) {
+    html += `<div class="library-section-title">Favourites</div>`;
+    html += favourites.map(renderLibraryCard).join('');
+  }
+  if (rest.length > 0) {
+    html += `<div class="library-section-title">More</div>`;
+    html += rest.map(renderLibraryCard).join('');
+  }
+
+  list.innerHTML = html;
+  attachLibraryCardHandlers(list, pages);
+}
+
+function renderLibrarySearchResults(results: Array<{ page: any; chunk: any; score: number }>): void {
+  const list = document.getElementById('library-list') as HTMLDivElement;
+
+  if (results.length === 0) {
+    renderLibraryEmpty('No matches in your reading history.');
+    return;
+  }
+
+  const seen = new Set<string>();
+  const pages: any[] = [];
+  for (const r of results) {
+    if (seen.has(r.page.url)) continue;
+    seen.add(r.page.url);
+    pages.push(r.page);
+  }
+
+  list.innerHTML = `<div class="library-section-title">Search results</div>` + pages.map(renderLibraryCard).join('');
+  attachLibraryCardHandlers(list, pages);
+}
+
+function renderLibraryCard(page: any): string {
+  const minutes = Math.round((page.attention?.engagedSeconds || 0) / 60);
+  const timeLabel = minutes >= 1 ? `${minutes} min read` : '<1 min';
+  const dateLabel = new Date(page.lastSeen).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+  return `
+    <div class="library-card" data-url="${escapeHtml(page.url)}">
+      ${page.favicon ? `<img class="library-card-favicon" src="${escapeHtml(page.favicon)}" onerror="this.style.display='none'" />` : ''}
+      <div class="library-card-body">
+        <div class="library-card-title">${escapeHtml(page.title || page.url)}</div>
+        <div class="library-card-meta">
+          <span>${escapeHtml(page.hostname)}</span>
+          <span>·</span>
+          <span>${timeLabel}</span>
+          <span>·</span>
+          <span>${dateLabel}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function attachLibraryCardHandlers(container: HTMLElement, pages: any[]): void {
+  container.querySelectorAll('.library-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const url = (card as HTMLElement).dataset.url;
+      if (url) chrome.tabs.create({ url });
+    });
   });
 }
 

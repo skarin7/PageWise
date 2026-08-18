@@ -8,6 +8,21 @@ import { pipeline, env } from '@xenova/transformers';
 // Configure Transformers.js for browser extension
 env.allowLocalModels = false;
 
+// This service runs in the MV3 background service worker, which does not
+// permit the blocking Atomics.wait() call ONNX Runtime's multi-threaded WASM
+// backend uses (SharedArrayBuffer + Atomics.wait is worker/main-thread only,
+// not service-worker-safe). Force single-threaded WASM to avoid
+// "RuntimeError: Atomics.wait cannot be called in this context".
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.numThreads = 1;
+
+  // ONNX Runtime self-detects its base URL via document.currentScript /
+  // self.location to find its .wasm files, which breaks inside a webpacked
+  // extension bundle and resolves to "chrome-extension://invalid/". Pin an
+  // explicit absolute CDN URL so it never needs to guess.
+  env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/';
+}
+
 export type LocalModelProvider = 'transformers' | 'ollama' | 'openai' | 'custom' | 'chrome-ai';
 
 export interface LocalModelOptions {
@@ -87,10 +102,11 @@ export class LocalModelService {
    * Initialize the text generation model
    * Uses singleton pattern to prevent multiple downloads
    */
-  async init(): Promise<void> {
+  async init(onProgress?: (percent: number) => void): Promise<void> {
     // If already initialized, return immediately
     if (this.initialized && this.pipeline) {
       console.log('[LocalModelService] Model already loaded, using cached version');
+      onProgress?.(100);
       return;
     }
 
@@ -101,7 +117,7 @@ export class LocalModelService {
     }
 
     // Start initialization
-    this.initPromise = this._doInit();
+    this.initPromise = this._doInit(onProgress);
     try {
       await this.initPromise;
     } finally {
@@ -112,7 +128,7 @@ export class LocalModelService {
   /**
    * Internal initialization method
    */
-  private async _doInit(): Promise<void> {
+  private async _doInit(onProgress?: (percent: number) => void): Promise<void> {
     const startTime = Date.now();
     
     try {
@@ -170,7 +186,8 @@ export class LocalModelService {
               }
               
               percent = Math.max(0, Math.min(100, percent));
-              
+              onProgress?.(percent);
+
               // Log every 10% to reduce noise
               if (percent % 10 === 0 && percent > 0) {
                 console.log(`[LocalModelService] Downloading model: ${percent}%`);
@@ -190,7 +207,8 @@ export class LocalModelService {
       
       const loadTime = Date.now() - startTime;
       this.initialized = true;
-      
+      onProgress?.(100);
+
       console.log(`[LocalModelService] ✅ Model loaded successfully in ${Math.round(loadTime / 1000)}s`);
       console.log(`[LocalModelService] 💡 Next load will be from cache (much faster)`);
     } catch (error) {

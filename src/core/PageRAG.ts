@@ -299,6 +299,15 @@ export class PageRAG {
   }
 
   /**
+   * Get embeddings for all currently-chunked pages, keyed by chunk id.
+   * Used by the attention gate to hand off to the cross-page corpus once
+   * embedding (Phase 2 of progressive indexing) has completed.
+   */
+  getChunkEmbeddings(): Map<string, number[]> {
+    return (this.vectorStore as any).embeddings as Map<string, number[]>;
+  }
+
+  /**
    * Check if initialized
    */
   isInitialized(): boolean {

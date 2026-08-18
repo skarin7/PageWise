@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "PageWise - Chat with Page",
+  "name": "BrowseIQ",
   "version": "1.0.0",
-  "description": "Query any webpage using semantic search powered by client-side RAG",
+  "description": "Chat with any webpage and build a searchable memory of what you read - all client-side.",
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -23,7 +25,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Chat with Page"
+    "default_title": "BrowseIQ"
   },
   "commands": {
     "toggle-sidebar": {
@@ -42,7 +44,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:11434 http://127.0.0.1:11434 http://localhost:* http://127.0.0.1:* https://huggingface.co https://cdn.jsdelivr.net https://*.hf.space;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:11434 http://127.0.0.1:11434 http://localhost:* http://127.0.0.1:* https://huggingface.co https://cdn.jsdelivr.net https://*.hf.space https://*.hf.co;"
   }
 }
 

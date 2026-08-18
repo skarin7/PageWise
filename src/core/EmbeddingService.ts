@@ -8,6 +8,22 @@ import { pipeline, env } from '@xenova/transformers';
 // Disable local models, use remote from HuggingFace
 env.allowLocalModels = false;
 
+// EmbeddingService can run inside the MV3 background service worker (e.g.
+// corpus search), which does not permit the blocking Atomics.wait() call
+// ONNX Runtime's multi-threaded WASM backend uses. Force single-threaded
+// WASM everywhere for consistent behavior across contexts.
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.numThreads = 1;
+
+  // ONNX Runtime tries to self-detect its own base URL (via
+  // document.currentScript / self.location) to find its .wasm files when
+  // wasmPaths isn't absolute. That detection breaks inside a webpacked
+  // extension bundle - there's no real <script src> to introspect - and it
+  // falls back to "chrome-extension://invalid/", failing every wasm fetch.
+  // Pin an explicit absolute CDN URL so it never needs to guess.
+  env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/';
+}
+
 // Intercept fetch requests to use Cache Storage (same as Transformers.js uses)
 // This ensures caching works across all pages/tabs in browser extensions
 if (typeof window !== 'undefined' && 'caches' in window) {
@@ -224,10 +240,11 @@ export class EmbeddingService {
    * Initialize the embedding model
    * Uses singleton pattern to prevent multiple downloads
    */
-  async init(): Promise<void> {
+  async init(onProgress?: (percent: number) => void): Promise<void> {
     // If already initialized, return immediately
     if (this.initialized && this.pipeline) {
       console.log('[EmbeddingService] Model already loaded, using cached version');
+      onProgress?.(100);
       return;
     }
 
@@ -238,7 +255,7 @@ export class EmbeddingService {
     }
 
     // Start initialization
-    this.initPromise = this._doInit();
+    this.initPromise = this._doInit(onProgress);
     try {
       await this.initPromise;
     } finally {
@@ -249,7 +266,7 @@ export class EmbeddingService {
   /**
    * Internal initialization method
    */
-  private async _doInit(): Promise<void> {
+  private async _doInit(onProgress?: (percent: number) => void): Promise<void> {
     const startTime = Date.now();
     let downloadProgress = false;
     let loadedFromCache = false;
@@ -310,7 +327,8 @@ export class EmbeddingService {
                 
                 // Clamp to 0-100 to prevent invalid percentages
                 percent = Math.max(0, Math.min(100, percent));
-                
+                onProgress?.(percent);
+
                 // Log every 10% to reduce noise
                 if (percent % 10 === 0 && percent > 0) {
                   console.log(`[EmbeddingService] Downloading from HuggingFace: ${percent}%`);
@@ -336,9 +354,10 @@ export class EmbeddingService {
       
       const loadTime = Date.now() - startTime;
       loadedFromCache = !downloadProgress && loadTime < 5000; // If no download progress and fast load, likely from cache
-      
+
       this.initialized = true;
-      
+      onProgress?.(100);
+
       if (loadedFromCache) {
         console.log(`[EmbeddingService] ✅ Model loaded from cache in ${loadTime}ms (fast!)`);
       } else if (downloadProgress) {

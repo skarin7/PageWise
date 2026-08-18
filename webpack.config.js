@@ -35,6 +35,7 @@ module.exports = {
         { from: 'test', to: 'test' },
         { from: 'src/extension/popup/popup.html', to: 'popup.html' },
         { from: 'src/extension/sidebar/sidebar.html', to: 'sidebar.html' },
+        { from: 'src/extension/sidebar/tokens.css', to: 'tokens.css' },
         { from: 'src/extension/options/options.html', to: 'options.html' }
       ]
     })

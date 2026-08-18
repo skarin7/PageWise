@@ -49,3 +49,46 @@ export interface HeadingNode {
   contentStart?: HTMLElement;
 }
 
+// --- Cross-page memory (corpus) types ---
+
+export interface AttentionSnapshot {
+  engagedSeconds: number;
+  scrollDepth: number; // 0-1
+  interactionCount: number;
+  userSearched: boolean;
+}
+
+export interface CorpusPage {
+  url: string;
+  title: string;
+  favicon?: string;
+  hostname: string;
+  firstSeen: number;
+  lastSeen: number;
+  attentionScore: number;
+  attention: AttentionSnapshot;
+  contentHash: string;
+  pageEmbedding: number[];
+  categoryId?: string;
+  chunkIds: string[];
+}
+
+export interface CorpusChunk extends Chunk {
+  embedding: number[];
+}
+
+export interface CorpusCategory {
+  id: string;
+  label: string;
+  centroid: number[];
+  pageCount: number;
+}
+
+export interface CorpusSearchResult {
+  page: CorpusPage;
+  chunk: CorpusChunk;
+  score: number;
+}
+
+export type CorpusTimeWindow = 'today' | 'week' | 'month' | 'all';
+
